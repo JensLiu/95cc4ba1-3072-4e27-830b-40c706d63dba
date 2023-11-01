@@ -93,6 +93,8 @@ auto Trie::Remove(std::string_view key) const -> Trie {
   std::shared_ptr<const TrieNode> root;
   std::shared_ptr<const TrieNode> p;
   p = this->root_;
+
+  assert(p);
   // record the path
   for (const char &ch : key) {
     queue.emplace_back(p, ch);
@@ -127,8 +129,8 @@ auto Trie::Remove(std::string_view key) const -> Trie {
 
   if (queue.empty()) {
     // the trie is cleared if the queue is empty
-    // return a new trie with empty root
-    return {};
+    // now p is the root
+    return Trie(p);
   }
 
   // if the deleted node has children, meaning that
@@ -142,6 +144,8 @@ auto Trie::Remove(std::string_view key) const -> Trie {
     p = new_parent;
     queue.pop_back();
   }
+
+  assert(p);
 
   // work backwards to the top, hence p is now the root
   return Trie(p);
