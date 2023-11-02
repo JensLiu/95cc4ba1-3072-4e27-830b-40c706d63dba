@@ -49,8 +49,7 @@ auto Trie::Put(std::string_view key, T value) const -> Trie {
     return Trie(root);
   }
 
-  p = pp = root =
-      this->root_ ? std::shared_ptr<TrieNode>(std::move(this->root_->Clone())) : std::make_shared<TrieNode>();
+  p = pp = root = this->root_ ? std::shared_ptr<TrieNode>(this->root_->Clone()) : std::make_shared<TrieNode>();
 
   for (const char &ch : key) {
     // loop invariant: p is cloned, and can be modified
@@ -65,7 +64,7 @@ auto Trie::Put(std::string_view key, T value) const -> Trie {
       p = child;
     } else {
       // found its child, copy it to preserve the previous version
-      auto child_ptr = std::shared_ptr<TrieNode>(std::move(child_itr->second->Clone()));
+      auto child_ptr = std::shared_ptr<TrieNode>(child_itr->second->Clone());
       p->children_[ch] = child_ptr;
       p = child_ptr;
     }
@@ -119,18 +118,17 @@ auto Trie::Remove(std::string_view key) const -> Trie {
         p = cloned_parent;
         queue.pop_back();  // pop the parent
         break;
-      } else {
-        // its parent has only one child (i.e. itself)
-        // it the parent can be ignored
-        queue.pop_back();
       }
+      // its parent has only one child (i.e. itself)
+      // it the parent can be ignored
+      queue.pop_back();
     }
   }
 
   if (queue.empty()) {
     // the trie is cleared if the queue is empty
-    // now p is the root
-    return Trie(p);
+    // now p is the root, check if p can be discarded
+    return p->children_.empty() ? Trie() : Trie(p);
   }
 
   // if the deleted node has children, meaning that
