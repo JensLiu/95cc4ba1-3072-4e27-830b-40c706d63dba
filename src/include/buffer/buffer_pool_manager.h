@@ -190,7 +190,7 @@ class BufferPoolManager {
   std::unique_ptr<LRUKReplacer> replacer_;
   /** List of free frames that don't have any pages on them. */
   std::list<frame_id_t> free_list_;
-  /** This latch protects shared data structures. We recommend updating this comment to describe what it protects. */
+  /** This latch protects shared data structures. protects the page pool, page table and free list */
   std::mutex latch_;
 
   /**
@@ -208,5 +208,58 @@ class BufferPoolManager {
   }
 
   // TODO(student): You may add additional private members and helper functions
+  /**
+   * @brief Get the pointer to the page with certain page id. The caller must hold a latch
+   * @param page_id
+   * @return pointer to the page or nullptr if not found
+   */
+  auto PageId2Page(page_id_t page_id) -> Page *;
+
+  /**
+   * @brief Find page by frame id. The caller must hold a latch
+   * @param frame_id
+   * @return page id if found, INVALID_PAGE_ID if not found
+   */
+  auto FrameId2Page(frame_id_t frame_id) -> Page *;
+
+  auto PageId2FrameId(page_id_t page_id) -> frame_id_t;
+
+  /**
+   * @brief Recycles the frame in buffer. reset frame memory and data
+   * @param page (frame in buffer) to recycle
+   */
+  void FrameReset(Page *page);
+
+  /**
+   * @brief Evict page from the buffer, doing all book keeping operations. The caller must hold a latch
+   * @param frame_id frame id pointer to be updated to the freed frame id
+   * @return
+   */
+  auto EvictOnePage(frame_id_t *frame_id) -> Page *;
+
+  /**
+   * @brief since page_id -> page map is expensive, we generalise a function that does not require the search
+   * @param page
+   * @return
+   */
+  auto FlushPageToDisk(Page *page) -> bool;
+
+  auto FetchPageFromDisk(Page *page) -> bool;
+
+  /**
+   * Find a free frame in the pool (in free list)
+   * @param frame_id
+   * @return
+   */
+  auto FindAvailableFrameInPool(frame_id_t *frame_id) -> Page *;
+
+  /**
+   * @brief Find a free frame, if not found in the free list, evict one
+   * from the replacer. If there's no page in the buffer that can be used
+   * return nullptr
+   * @param frame_id
+   * @return
+   */
+  auto FindOneReusablePage(frame_id_t *frame_id) -> Page *;
 };
 }  // namespace bustub
