@@ -194,6 +194,11 @@ class ExtendibleHTableDirectoryPage {
   uint32_t global_depth_;
   uint8_t local_depths_[HTABLE_DIRECTORY_ARRAY_SIZE];
   page_id_t bucket_page_ids_[HTABLE_DIRECTORY_ARRAY_SIZE];
+
+  // helper function
+  auto static inline GetDepthMask(uint32_t depth) -> uint32_t;
+  auto inline ForwardSplitImageIdx(uint32_t bucket_idx) const -> uint32_t;
+  auto inline BackwardSplitImageIdx(uint32_t bucket_idx) const -> uint32_t;
 };
 
 static_assert(sizeof(page_id_t) == 4);
