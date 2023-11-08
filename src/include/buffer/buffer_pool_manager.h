@@ -238,7 +238,7 @@ class BufferPoolManager {
   auto EvictOnePage(frame_id_t *frame_id) -> Page *;
 
   /**
-   * @brief since page_id -> page map is expensive, we generalise a function that does not require the search
+   * @brief we generalise a function that does not require the search
    * @param page
    * @return
    */

@@ -106,17 +106,35 @@ class BasicPageGuard {
   friend class ReadPageGuard;
   friend class WritePageGuard;
 
-  [[maybe_unused]] BufferPoolManager *bpm_{nullptr};
+  BufferPoolManager *bpm_{nullptr};
   Page *page_{nullptr};
   bool is_dirty_{false};
+  int latch_state_{0};  // 0: not holding, 1: reading lock, 2: writing lock
+
+  // helper function
+  static void Invalidate(BasicPageGuard *guard) {
+    guard->bpm_ = nullptr;
+    guard->is_dirty_ = false;
+    guard->page_ = nullptr;
+    guard->latch_state_ = 0;
+  }
+
+  /**
+   * @brief Invalidate itself in terms of the page it's holding
+   * does not unpin in the buffer or write back...
+   */
+  void Invalidate() { Invalidate(this); }
 };
 
 class ReadPageGuard {
  public:
   ReadPageGuard() = default;
-  ReadPageGuard(BufferPoolManager *bpm, Page *page) : guard_(bpm, page) {}
+  ReadPageGuard(BufferPoolManager *bpm, Page *page);
   ReadPageGuard(const ReadPageGuard &) = delete;
   auto operator=(const ReadPageGuard &) -> ReadPageGuard & = delete;
+
+  // deal with upgrade
+  explicit ReadPageGuard(BasicPageGuard &&basic) noexcept;
 
   /** TODO(P2): Add implementation
    *
@@ -169,13 +187,17 @@ class ReadPageGuard {
  private:
   // You may choose to get rid of this and add your own private variables.
   BasicPageGuard guard_;
+  void ReadLatchPage();
 };
 
 class WritePageGuard {
  public:
   WritePageGuard() = default;
-  WritePageGuard(BufferPoolManager *bpm, Page *page) : guard_(bpm, page) {}
+  WritePageGuard(BufferPoolManager *bpm, Page *page);
   WritePageGuard(const WritePageGuard &) = delete;
+
+  explicit WritePageGuard(BasicPageGuard &&basic) noexcept;
+
   auto operator=(const WritePageGuard &) -> WritePageGuard & = delete;
 
   /** TODO(P2): Add implementation
@@ -236,6 +258,8 @@ class WritePageGuard {
  private:
   // You may choose to get rid of this and add your own private variables.
   BasicPageGuard guard_;
+
+  void WriteLatchPage();
 };
 
 }  // namespace bustub
