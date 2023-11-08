@@ -123,6 +123,19 @@ class DiskExtendibleHashTable {
                       ExtendibleHTableBucketPage<K, V, KC> *new_bucket, uint32_t new_bucket_idx,
                       uint32_t local_depth_mask);
 
+  auto SplitBucket(WritePageGuard &dir_guard, WritePageGuard &buk_guard, uint32_t buk_idx) -> WritePageGuard;
+
+  auto SplitUntilFit(const K &key, const V &value, WritePageGuard &dir_guard) -> bool;
+
+  auto LocalCanSplit(uint32_t buk_idx, ExtendibleHTableDirectoryPage *dir_page) -> bool;
+
+  auto CombineTwoBuckets(uint32_t lower_buk_idx, WritePageGuard &lower_buk_guard, uint32_t upper_buk_idx,
+                         WritePageGuard &&upper_buk_guard, WritePageGuard &dir_guard) -> bool;
+
+  void MergeBuckets(uint32_t buk_idx, WritePageGuard &&buk_guard, WritePageGuard &dir_guard);
+
+  void MergeOnlyWhenBothEmpty(uint32_t buk_idx, WritePageGuard &&buk_guard, WritePageGuard &dir_guard);
+
   // member variables
   std::string index_name_;
   BufferPoolManager *bpm_;
@@ -132,6 +145,32 @@ class DiskExtendibleHashTable {
   uint32_t directory_max_depth_;
   uint32_t bucket_max_size_;
   page_id_t header_page_id_;
+
+  // crabbing algorithm
+  enum class CrabbingRetType {
+    FAILURE = 0,
+    SUCCESS,
+    REDO_PESSIMISTICALLY,
+  };
+  auto InsertOptimistically(const K &key, const V &value, Transaction *transaction) -> CrabbingRetType;
+  auto InsertPessimistically(const K &key, const V &value, Transaction *transaction) -> CrabbingRetType;
+
+  auto RemoveOptimistically(const K &key, Transaction *transaction = nullptr) -> CrabbingRetType;
+  auto RemovePessimistically(const K &key, Transaction *transaction = nullptr) -> CrabbingRetType;
+
+  // helper functions
+  auto HeaderPage() const -> BasicPageGuard;
+  auto Hash2DirPageOrAllocate(const uint32_t &hash, ExtendibleHTableHeaderPage *header_page, bool *allocated = nullptr)
+      -> BasicPageGuard;
+  auto Hash2BukPageOrAllocate(const uint32_t &hash, ExtendibleHTableDirectoryPage *dir_page, bool *allocated = nullptr)
+      -> BasicPageGuard;
+  auto Hash2DirPageOrNull(const uint32_t &hash, const ExtendibleHTableHeaderPage *header_page) const
+      -> std::optional<BasicPageGuard>;
+  auto Hash2BukPageOrNull(const uint32_t &hash, const ExtendibleHTableDirectoryPage *dir_page) const
+      -> std::optional<BasicPageGuard>;
+  auto Hash2BukOrFail(const uint32_t &hash, const ExtendibleHTableDirectoryPage *dir_page) const -> BasicPageGuard;
+  auto AllocateOneDirectoryPage(page_id_t *page_id) -> BasicPageGuard;
+  auto AllocateOneBucketPage(page_id_t *page_id) -> BasicPageGuard;
 };
 
 }  // namespace bustub
