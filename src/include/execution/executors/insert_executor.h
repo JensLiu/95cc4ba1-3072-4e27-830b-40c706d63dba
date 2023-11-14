@@ -57,6 +57,12 @@ class InsertExecutor : public AbstractExecutor {
  private:
   /** The insert plan node to be executed*/
   const InsertPlanNode *plan_;
+  std::unique_ptr<AbstractExecutor> child_executor_;
+
+  // to record if this is the first call of the batch to distinguish
+  // between zero insert and end of the batch
+  bool batch_begin_{true};
+
 };
 
 }  // namespace bustub
