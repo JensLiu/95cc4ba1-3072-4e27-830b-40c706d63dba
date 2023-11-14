@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/util/hash_util.h"
 #include "binder/table_ref/bound_join_ref.h"
 #include "execution/expressions/abstract_expression.h"
 #include "execution/plans/abstract_plan.h"
@@ -80,4 +81,47 @@ class HashJoinPlanNode : public AbstractPlanNode {
   auto PlanNodeToString() const -> std::string override;
 };
 
+struct JoinKey {
+  std::vector<Value> col_vals;
+  void AddColValue(const Value &val) {
+    col_vals.push_back(val);
+  }
+  auto operator==(const JoinKey &that) const -> bool {
+    if (col_vals.size() != that.col_vals.size()) {
+      return false;
+    }
+    for (uint32_t i = 0; i < col_vals.size(); ++i) {
+      if (col_vals[i].CompareEquals(that.col_vals[i]) != CmpBool::CmpTrue) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+struct JoinValue {
+  std::vector<Tuple> left_tuples;
+  std::vector<Tuple> right_tuples;
+  void CombineLeft(const Tuple &tuple) {
+    left_tuples.push_back(tuple);
+  }
+  void CombineRight(const Tuple &tuple) {
+    right_tuples.push_back(tuple);
+  }
+};
+
 }  // namespace bustub
+
+namespace std {
+template<>
+struct hash<bustub::JoinKey> {
+  auto operator()(const bustub::JoinKey &join_key) const -> std::size_t {
+    size_t curr_hash = 0;
+    for (const auto &key : join_key.col_vals) {
+      curr_hash = bustub::HashUtil::CombineHashes(curr_hash, bustub::HashUtil::HashValue(&key));
+    }
+    return curr_hash;
+  }
+};
+
+} // namespace std

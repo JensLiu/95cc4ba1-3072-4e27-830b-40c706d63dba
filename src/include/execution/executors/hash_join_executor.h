@@ -54,6 +54,20 @@ class HashJoinExecutor : public AbstractExecutor {
  private:
   /** The HashJoin plan node to be executed. */
   const HashJoinPlanNode *plan_;
+  const std::shared_ptr<AbstractExecutor> left_executor_;
+  const std::shared_ptr<AbstractExecutor> right_executor_;
+  RID dummy_rid_{};
+
+  // we assume that both records can fit in memory
+  std::unordered_map<JoinKey, JoinValue> join_ht_;
+  std::unordered_map<JoinKey, JoinValue>::const_iterator ht_itr_;
+  uint32_t lhs_cursor_;
+  uint32_t rhs_cursor_;
+  bool hash_join_emit_null_{true};
+
+  Tuple MergeTuples(const Tuple *lhs_tpl, const Schema *lhs_schema, const Tuple *rhs_tpl,
+                    const Schema *rhs_schema) const;
+  Tuple EmptyRhsTuple(const Tuple *lhs_tpl, const Schema *lhs_schema, const Schema *rhs_schema) const;
 };
 
 }  // namespace bustub
