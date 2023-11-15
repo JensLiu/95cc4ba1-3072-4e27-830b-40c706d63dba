@@ -19,6 +19,7 @@
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/seq_scan_plan.h"
+#include "execution/plans/sort_plan.h"
 #include "execution/plans/topn_plan.h"
 #include "storage/table/tuple.h"
 
@@ -63,5 +64,9 @@ class TopNExecutor : public AbstractExecutor {
   const TopNPlanNode *plan_;
   /** The child executor from which tuples are obtained */
   std::unique_ptr<AbstractExecutor> child_executor_;
+
+  std::vector<OrderByType> order_by_types_;
+  std::list<std::pair<TopNKey, TopNValue>> top_n_container_;
+  std::list<std::pair<TopNKey, TopNValue>>::const_iterator bucket_itr_;
 };
 }  // namespace bustub
