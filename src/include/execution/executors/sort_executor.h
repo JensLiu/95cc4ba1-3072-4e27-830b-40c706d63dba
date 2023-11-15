@@ -50,7 +50,12 @@ class SortExecutor : public AbstractExecutor {
   auto GetOutputSchema() const -> const Schema & override { return plan_->OutputSchema(); }
 
  private:
+
   /** The sort plan node to be executed */
   const SortPlanNode *plan_;
+  std::shared_ptr<AbstractExecutor> child_executor_;
+  std::vector<std::pair<SortKey, SortValue>> container_;
+  std::vector<OrderByType> order_by_types_;
+  uint32_t cursor_;
 };
 }  // namespace bustub
