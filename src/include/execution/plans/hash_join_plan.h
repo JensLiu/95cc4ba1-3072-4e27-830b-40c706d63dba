@@ -82,16 +82,15 @@ class HashJoinPlanNode : public AbstractPlanNode {
 };
 
 struct JoinKey {
-  std::vector<Value> col_vals;
-  void AddColValue(const Value &val) {
-    col_vals.push_back(val);
+  std::vector<Value> key_vals_;
+  void AddColValue(const Value &val) { key_vals_.push_back(val);
   }
   auto operator==(const JoinKey &that) const -> bool {
-    if (col_vals.size() != that.col_vals.size()) {
+    if (key_vals_.size() != that.key_vals_.size()) {
       return false;
     }
-    for (uint32_t i = 0; i < col_vals.size(); ++i) {
-      if (col_vals[i].CompareEquals(that.col_vals[i]) != CmpBool::CmpTrue) {
+    for (uint32_t i = 0; i < key_vals_.size(); ++i) {
+      if (key_vals_[i].CompareEquals(that.key_vals_[i]) != CmpBool::CmpTrue) {
         return false;
       }
     }
@@ -100,13 +99,11 @@ struct JoinKey {
 };
 
 struct JoinValue {
-  std::vector<Tuple> left_tuples;
-  std::vector<Tuple> right_tuples;
-  void CombineLeft(const Tuple &tuple) {
-    left_tuples.push_back(tuple);
+  std::vector<Tuple> left_tuples_;
+  std::vector<Tuple> right_tuples_;
+  void CombineLeft(const Tuple &tuple) { left_tuples_.push_back(tuple);
   }
-  void CombineRight(const Tuple &tuple) {
-    right_tuples.push_back(tuple);
+  void CombineRight(const Tuple &tuple) { right_tuples_.push_back(tuple);
   }
 };
 
@@ -117,7 +114,7 @@ template<>
 struct hash<bustub::JoinKey> {
   auto operator()(const bustub::JoinKey &join_key) const -> std::size_t {
     size_t curr_hash = 0;
-    for (const auto &key : join_key.col_vals) {
+    for (const auto &key : join_key.key_vals_) {
       curr_hash = bustub::HashUtil::CombineHashes(curr_hash, bustub::HashUtil::HashValue(&key));
     }
     return curr_hash;

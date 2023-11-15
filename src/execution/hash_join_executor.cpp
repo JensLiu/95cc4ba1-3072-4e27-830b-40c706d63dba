@@ -77,10 +77,13 @@ auto HashJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
   while (true) {
     // std::unmapped_map returns values with the same key, so no need to deal with conflict, if the keys do not match,
     // left_tuples or right_tuples would be empty
-    auto &left_tuples = ht_itr_->second.left_tuples;
-    auto &right_tuples = ht_itr_->second.right_tuples;
+    if (ht_itr_ == join_ht_.end()) {
+      return false;
+    }
+    auto &left_tuples = ht_itr_->second.left_tuples_;
+    auto &right_tuples = ht_itr_->second.right_tuples_;
     if (!left_tuples.empty()) { // if left tuples are empty, skip the sub nested loop
-      while (rhs_cursor_ < ht_itr_->second.right_tuples.size()) {
+      while (rhs_cursor_ < ht_itr_->second.right_tuples_.size()) {
         hash_join_emit_null_ = false;
         *tuple = MergeTuples(&left_tuples[lhs_cursor_], &left_executor_->GetOutputSchema(), &right_tuples[rhs_cursor_],
                              &right_executor_->GetOutputSchema());
@@ -98,7 +101,7 @@ auto HashJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
       // reset right itr to the beginning
       rhs_cursor_ = 0;
       // move left itr forward
-      if (++lhs_cursor_ < ht_itr_->second.left_tuples.size()) {
+      if (++lhs_cursor_ < ht_itr_->second.left_tuples_.size()) {
         hash_join_emit_null_ = true;
         continue;
       }
@@ -106,15 +109,10 @@ auto HashJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
     rhs_cursor_ = 0;
     lhs_cursor_ = 0;
     // after left tuples are traversed, go to the next bucket
-    if (++ht_itr_ == join_ht_.end()) {
-      // end of bucket, no more tuples
-      return false;
-    }
+    ++ht_itr_;
     hash_join_emit_null_ = true;
   }
 }
-
-// TODO(jens): duplicated code from NestedLoopJoinExecutor, extract it into a uitl class
 
 auto HashJoinExecutor::MergeTuples(const Tuple *lhs_tpl, const Schema *lhs_schema, const Tuple *rhs_tpl,
                                    const Schema *rhs_schema) const -> Tuple {
