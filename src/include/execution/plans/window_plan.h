@@ -100,7 +100,94 @@ class WindowFunctionPlanNode : public AbstractPlanNode {
   auto PlanNodeToString() const -> std::string override;
 };
 
+struct WFPartitionKey {
+  std::vector<Value> partition_bys_;
+  void AddToKey(const Value &val) { partition_bys_.push_back(val); }
+  auto operator==(const WFPartitionKey &other) const -> bool {
+    for (uint32_t i = 0; i < other.partition_bys_.size(); i++) {
+      if (partition_bys_[i].CompareEquals(other.partition_bys_[i]) != CmpBool::CmpTrue) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+struct WFPartition {
+  // we use smart pointer to manage tuples, so that there would not be duplicates and memory leaks
+  enum CmpResult { LESS_THAN = 0, EQUALS = 1, GREATER_THAN = 2 };
+  using partition_data_t_ = std::pair<std::shared_ptr<Tuple>, Value>;
+  std::vector<partition_data_t_> data_;
+
+  // use index for fast lookup
+  std::unordered_map<std::shared_ptr<Tuple>, const Value *> index_;
+  void BuildIndex() {
+    for (const auto &pair : data_) {
+      index_[pair.first] = &pair.second;
+    }
+  }
+
+  auto IndexLookup(const std::shared_ptr<Tuple> &key) const -> std::optional<Value> {
+    if (index_.count(key) == 0) {
+      return std::nullopt;
+    }
+    try {
+      const auto &value = index_.at(key);
+      return {*value};
+    } catch (std::exception &exception) {
+      return std::nullopt;
+    }
+    assert(0);
+  }
+
+  auto LinearLookup(const std::shared_ptr<Tuple> &key) const -> std::optional<Value> {
+    for (const auto &row : data_) {
+      if (row.first == key) {
+        return {row.second};
+      }
+    }
+    return std::nullopt;
+  }
+
+  void InsertTuple(std::shared_ptr<Tuple> &tuple, const Value &value) { data_.emplace_back(tuple, value); }
+
+  static auto Compare(const std::shared_ptr<Tuple> &left, const std::shared_ptr<Tuple> &right,
+                      const std::vector<std::pair<OrderByType, AbstractExpressionRef>> &order_by, const Schema &schema)
+      -> CmpResult {
+    for (auto &ob : order_by) {
+      auto left_val = ob.second->Evaluate(left.get(), schema);
+      auto right_val = ob.second->Evaluate(right.get(), schema);
+      if (left_val.CompareEquals(right_val) == CmpBool::CmpTrue) {
+        continue;
+      }
+      auto less_than = left_val.CompareLessThan(right_val) == CmpBool::CmpTrue;
+      if (ob.first == OrderByType::ASC || ob.first == OrderByType::DEFAULT) {
+        return less_than ? CmpResult::LESS_THAN : CmpResult::GREATER_THAN;
+      }
+      if (ob.first == OrderByType::DESC) {
+        return !less_than ? CmpResult::LESS_THAN : CmpResult::GREATER_THAN;
+      }
+    }
+    return CmpResult::EQUALS;
+  }
+};
+
 }  // namespace bustub
+
+namespace std {
+template <>
+struct hash<bustub::WFPartitionKey> {
+  auto operator()(const bustub::WFPartitionKey &frame_key) const -> std::size_t {
+    size_t curr_hash = 0;
+    for (const auto &key : frame_key.partition_bys_) {
+      if (!key.IsNull()) {
+        curr_hash = bustub::HashUtil::CombineHashes(curr_hash, bustub::HashUtil::HashValue(&key));
+      }
+    }
+    return curr_hash;
+  }
+};
+}  // namespace std
 
 template <>
 struct fmt::formatter<bustub::WindowFunctionPlanNode::WindowFunction> : formatter<std::string> {
