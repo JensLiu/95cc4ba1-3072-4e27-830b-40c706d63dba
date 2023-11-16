@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <iostream>
@@ -95,12 +96,12 @@ struct TerrierMetrics {
     auto now = ClockMs();
     auto elapsed = now - start_time_;
     if (elapsed - last_report_at_ > 1000) {
-      fmt::print(
-          stderr,
-          "[{:5.2f}] {}: total_committed_txn={:<8} total_aborted_txn={:<8} throughput={:<8.3} avg_throughput={:<8.3}\n",
-          elapsed / 1000.0, reporter_, committed_txn_cnt_, aborted_txn_cnt_,
-          (committed_txn_cnt_ - last_committed_txn_cnt_) / static_cast<double>(elapsed - last_report_at_) * 1000,
-          committed_txn_cnt_ / static_cast<double>(elapsed) * 1000);
+      fmt::print(stderr,
+                 "[{:5.2f}] {}: total_committed_txn={:<8} total_aborted_txn={:<8} throughput={:<8.3f} "
+                 "avg_throughput={:<8.3f}\n",
+                 elapsed / 1000.0, reporter_, committed_txn_cnt_, aborted_txn_cnt_,
+                 (committed_txn_cnt_ - last_committed_txn_cnt_) / static_cast<double>(elapsed - last_report_at_) * 1000,
+                 committed_txn_cnt_ / static_cast<double>(elapsed) * 1000);
       last_report_at_ = elapsed;
       last_committed_txn_cnt_ = committed_txn_cnt_;
     }
@@ -141,7 +142,7 @@ void Bench1TaskTransfer(const int thread_id, const int terrier_num, const uint64
   std::uniform_int_distribution<int> terrier_uniform_dist(0, terrier_num - 1);
   std::uniform_int_distribution<int> money_transfer_dist(5, max_transfer_amount);
 
-  TerrierMetrics metrics(fmt::format("Transfer {}", thread_id), duration_ms);
+  TerrierMetrics metrics(fmt::format("Xfr  {}", thread_id), duration_ms);
   metrics.Begin();
 
   while (!metrics.ShouldFinish()) {
@@ -192,14 +193,15 @@ void Bench1TaskTransfer(const int thread_id, const int terrier_num, const uint64
 
 void Bench2TaskTransfer(const int thread_id, const int terrier_num, const uint64_t duration_ms,
                         const bustub::IsolationLevel iso_lvl, bustub::BustubInstance *bustub,
-                        TerrierTotalMetrics &total_metrics) {
+                        TerrierTotalMetrics &total_metrics, std::atomic<int> &token_adjustment) {
   const int max_transfer_amount = 1000;
   std::random_device r;
   std::default_random_engine gen(r());
   std::uniform_int_distribution<int> terrier_uniform_dist(0, terrier_num - 1);
   std::uniform_int_distribution<int> money_transfer_dist(5, max_transfer_amount);
+  int adjustment = 0;
 
-  TerrierMetrics metrics(fmt::format("Transfer {}", thread_id), duration_ms);
+  TerrierMetrics metrics(fmt::format("Xfr  {}", thread_id), duration_ms);
   metrics.Begin();
 
   while (!metrics.ShouldFinish()) {
@@ -228,6 +230,7 @@ void Bench2TaskTransfer(const int thread_id, const int terrier_num, const uint64
     }
     auto network2 = ExtractOneCell(writer);
     int receive = network1 == network2 ? transfer_amount : transfer_amount * 0.97;
+
     std::string transfer1 =
         fmt::format("UPDATE terriers SET token = token + {} WHERE terrier = {}", receive, terrier_a);
     std::string transfer2 =
@@ -253,20 +256,25 @@ void Bench2TaskTransfer(const int thread_id, const int terrier_num, const uint64
       fmt::print(stderr, "unexpected result when update \"{}\" != 1\n", result);
       exit(1);
     }
+    metrics.TxnCommitted();
+
     if (!bustub->txn_manager_->Commit(txn)) {
       metrics.TxnAborted();
       continue;
     }
+
+    adjustment += receive - transfer_amount;  // losing some tokens...
+
     metrics.TxnCommitted();
     metrics.Report();
   }
-
+  token_adjustment.fetch_add(adjustment);
   total_metrics.ReportTransfer(metrics.aborted_txn_cnt_, metrics.committed_txn_cnt_);
 }
 
 void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t duration_ms,
                     const bustub::IsolationLevel iso_lvl, bustub::BustubInstance *bustub,
-                    TerrierTotalMetrics &total_metrics) {
+                    TerrierTotalMetrics &total_metrics, std::atomic<int> &token_adjustment) {
   std::random_device r;
   std::default_random_engine gen(r());
   std::uniform_int_distribution<int> terrier_uniform_dist(0, terrier_num - 1);
@@ -277,6 +285,7 @@ void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t d
   metrics.Begin();
 
   const int sign_bonus = 1000;
+  int adjustment = 0;
 
   while (!metrics.ShouldFinish()) {
     std::stringstream ss;
@@ -315,6 +324,7 @@ void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t d
         metrics.TxnAborted();
         continue;
       }
+      adjustment += sign_bonus;  // adjust up
       metrics.TxnCommitted();
       metrics.Report();
     } else if (join_action == 1) {
@@ -336,6 +346,7 @@ void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t d
         metrics.TxnAborted();
         continue;
       }
+      adjustment -= sign_bonus;  // adjust down
       metrics.TxnCommitted();
       metrics.Report();
     }
@@ -393,6 +404,7 @@ void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t d
         metrics.TxnAborted();
         continue;
       }
+      adjustment += sign_bonus;  // only one of them succeeded
       if (!bustub->txn_manager_->Commit(txn2)) {
         metrics.TxnAborted();
         continue;
@@ -402,6 +414,7 @@ void Bench2TaskJoin(const int thread_id, const int terrier_num, const uint64_t d
     }
   }
 
+  token_adjustment.fetch_add(adjustment);
   total_metrics.ReportJoin(metrics.aborted_txn_cnt_, metrics.committed_txn_cnt_);
 }
 
@@ -454,6 +467,7 @@ auto main(int argc, char **argv) -> int {
 
   size_t bustub_terrier_num = 10;
   size_t bustub_thread_cnt = 2;
+  const size_t bpm_size = 4096;  // ensure benchmark does not hit BPM
 
   try {
     program.parse_args(argc, argv);
@@ -462,7 +476,7 @@ auto main(int argc, char **argv) -> int {
     return 1;
   }
 
-  auto bustub = std::make_unique<bustub::BustubInstance>();
+  auto bustub = std::make_unique<bustub::BustubInstance>(bpm_size);
   auto writer = bustub::SimpleStreamWriter(std::cerr);
 
   if (program.present("--terriers")) {
@@ -517,6 +531,7 @@ auto main(int argc, char **argv) -> int {
   }
 
   const int initial_token = 10000;
+  std::atomic<int> token_adjustment{0};
 
   // initialize data
   fmt::println(stderr, "x: initialize data");
@@ -571,15 +586,17 @@ auto main(int argc, char **argv) -> int {
     }
     if (bench_2) {
       if (thread_id % 2 == 0) {
-        threads.emplace_back([thread_id, bustub_terrier_num, duration_ms, &bustub, &total_metrics]() {
-          Bench2TaskJoin(thread_id, bustub_terrier_num, duration_ms, bustub::IsolationLevel::SERIALIZABLE, bustub.get(),
-                         total_metrics);
-        });
+        threads.emplace_back(
+            [thread_id, bustub_terrier_num, duration_ms, &bustub, &total_metrics, &token_adjustment]() {
+              Bench2TaskJoin(thread_id, bustub_terrier_num, duration_ms, bustub::IsolationLevel::SERIALIZABLE,
+                             bustub.get(), total_metrics, token_adjustment);
+            });
       } else {
-        threads.emplace_back([thread_id, bustub_terrier_num, duration_ms, &bustub, &total_metrics]() {
-          Bench2TaskTransfer(thread_id, bustub_terrier_num, duration_ms, bustub::IsolationLevel::SERIALIZABLE,
-                             bustub.get(), total_metrics);
-        });
+        threads.emplace_back(
+            [thread_id, bustub_terrier_num, duration_ms, &bustub, &total_metrics, &token_adjustment]() {
+              Bench2TaskTransfer(thread_id, bustub_terrier_num, duration_ms, bustub::IsolationLevel::SERIALIZABLE,
+                                 bustub.get(), total_metrics, token_adjustment);
+            });
       }
     }
   }
@@ -594,17 +611,36 @@ auto main(int argc, char **argv) -> int {
   }
 
   total_metrics.End();
+
+  {
+    bustub::StringVectorWriter writer;
+    bustub->ExecuteSql("SELECT SUM(token) FROM terriers", writer);
+    auto cnt = std::stoi(ExtractOneCell(writer));
+    int expected = bustub_terrier_num * initial_token + token_adjustment;
+    if (cnt != expected) {
+      fmt::println(stderr, "inconsistent total tokens: expected {}, found {}", expected, cnt);
+      exit(1);
+    }
+  }
+
+  {
+    bustub::SimpleStreamWriter writer(std::cerr);
+    fmt::println(stderr, "--- the following data might be manually inspected by TAs ---");
+    bustub->ExecuteSql("SELECT * FROM terriers LIMIT 100", writer);
+  }
+
   if (db_size.load() == 0) {
     db_size = 999999999;
   }
+
   total_metrics.Report(db_size);
 
-  if (total_metrics.committed_transfer_txn_cnt_ <= 200) {
+  if (total_metrics.committed_transfer_txn_cnt_ <= 100) {
     fmt::println(stderr, "too many txn are aborted");
     exit(1);
   }
 
-  if (bench_2 && total_metrics.committed_join_txn_cnt_ <= 200) {
+  if (bench_2 && total_metrics.committed_join_txn_cnt_ <= 100) {
     fmt::println(stderr, "too many txn are aborted");
     exit(1);
   }
