@@ -1,5 +1,7 @@
 #pragma once
 
+#include <map>
+#include <queue>
 #include <unordered_map>
 
 #include "concurrency/transaction.h"
@@ -13,7 +15,9 @@ namespace bustub {
  */
 class Watermark {
  public:
-  explicit Watermark(timestamp_t commit_ts) : commit_ts_(commit_ts), watermark_(commit_ts) {}
+  explicit Watermark(timestamp_t commit_ts) : commit_ts_(commit_ts), watermark_(commit_ts) {
+
+  }
 
   auto AddTxn(timestamp_t read_ts) -> void;
 
@@ -24,9 +28,9 @@ class Watermark {
   auto UpdateCommitTs(timestamp_t commit_ts) { commit_ts_ = commit_ts; }
 
   auto GetWatermark() -> timestamp_t {
-    if (current_reads_.empty()) {
-      return commit_ts_;
-    }
+//    if (current_reads_.empty()) {
+//      return commit_ts_;
+//    }
     return watermark_;
   }
 
@@ -34,7 +38,11 @@ class Watermark {
 
   timestamp_t watermark_;
 
-  std::unordered_map<timestamp_t, int> current_reads_;
+  // std::unordered_map<timestamp_t, int> current_reads_;
+  std::map<timestamp_t, int> current_reads_;
+
+private:
+  auto inline FindWaterMark() const -> timestamp_t;
 };
 
 };  // namespace bustub
