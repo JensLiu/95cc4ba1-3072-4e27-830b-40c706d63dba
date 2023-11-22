@@ -12,6 +12,8 @@
 
 #include <memory>
 
+#include "concurrency/transaction_manager.h"
+#include "execution/execution_common.h"
 #include "execution/executors/delete_executor.h"
 
 namespace bustub {
@@ -25,22 +27,52 @@ void DeleteExecutor::Init() { child_executor_->Init(); }
 auto DeleteExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
   auto cat = exec_ctx_->GetCatalog();
   auto table_info = exec_ctx_->GetCatalog()->GetTable(plan_->GetTableOid());
+  auto &table = table_info->table_;
   auto indexes = cat->GetTableIndexes(table_info->name_);
+  auto txn = exec_ctx_->GetTransaction();
+  auto txn_mngr = exec_ctx_->GetTransactionManager();
 
-  Tuple tuple_to_delete;
+  Tuple tuple_to_remove;
   RID rid_to_remove;
   int32_t row_cnt = 0;
 
   // its child is a sequential scan or a filter
-  while (child_executor_->Next(&tuple_to_delete, &rid_to_remove)) {
-    table_info->table_->UpdateTupleMeta({std::time(nullptr), true}, rid_to_remove);  // remove the tuple
-    // update index
-    for (auto &index : indexes) {
-      auto &idx_spanning_col_attrs = index->index_->GetKeyAttrs();
-      auto key_to_remove =
-          tuple_to_delete.KeyFromTuple(table_info->schema_, index->key_schema_, idx_spanning_col_attrs);
-      index->index_->DeleteEntry(key_to_remove, rid_to_remove, exec_ctx_->GetTransaction());  // rid is unused
+  while (child_executor_->Next(&tuple_to_remove, &rid_to_remove)) {
+    auto [base_meta, base_tuple] = table->GetTuple(rid_to_remove);
+    if (IsWriteWriteConflict(base_meta, txn->GetReadTs(), txn->GetTransactionId())) {
+      txn->SetTainted();
+      throw ExecutionException("delete executor: write-write conflict. trying to delete the future");
     }
+
+    // create undo log for the first delete
+    const auto first_modification = base_meta.ts_ != txn->GetTransactionId();
+    if (!table->UpdateTupleInPlace({txn->GetTransactionId(), true}, GenerateNullTupleForSchema(&table_info->schema_),
+                                   rid_to_remove, [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
+                                     return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
+                                   })) {
+      txn->SetTainted();
+      throw ExecutionException("delete executor: write-write conflict. another txn snicked in");
+    }
+
+    if (first_modification) {
+      auto undo_log = GenerateDeleteLog(tuple_to_remove, &table_info->schema_, base_meta.ts_);
+      LinkIntoVersionChainCAS(undo_log, rid_to_remove, txn, txn_mngr);
+      txn->AppendWriteSet(table_info->oid_, rid_to_remove);
+    } else {
+      // it may be updated and then deleted, thus we need to update the partial schema to record all changes
+      const auto link = txn_mngr->GetUndoLink(rid_to_remove);
+      if (link.has_value()) {
+        const auto old_diff_log = txn_mngr->GetUndoLog(link.value());
+        const auto tuple_snapshot = ReconstructTuple(&table_info->schema_, base_tuple, base_meta, {old_diff_log});
+        assert(tuple_snapshot.has_value());
+        // use snapshot value because the current table heap tuple may be modified by the txn and should not be visible
+        // to other transactions
+        auto undo_log = GenerateDeleteLog(tuple_snapshot.value(), &table_info->schema_, old_diff_log.ts_);
+        undo_log.prev_version_ = old_diff_log.prev_version_;  // link into the chain
+        txn->ModifyUndoLog(link->prev_log_idx_, undo_log);
+      }
+    }
+
     ++row_cnt;
   }
 
