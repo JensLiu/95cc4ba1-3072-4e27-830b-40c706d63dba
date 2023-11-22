@@ -153,6 +153,9 @@ class TransactionManager {
   /** @brief Verify if a txn satisfies serializability. We will not test this function and you can change / remove it as
    * you want. */
   auto VerifyTxn(Transaction *txn) -> bool;
+  auto GetVersionLinkPtrUnsafe(RID rid) -> VersionUndoLink *;
+  auto GetUndoLogPtrUnsafe(const UndoLink &link) -> UndoLog *;
+  void VersionLinkGarbageCollection(const RID &rid, const TupleMeta &base_meta);
 };
 
 }  // namespace bustub
