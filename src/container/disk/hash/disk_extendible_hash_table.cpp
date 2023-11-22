@@ -130,7 +130,9 @@ auto DiskExtendibleHashTable<K, V, KC>::InsertOptimistically(const K &key, const
   if (!opt.has_value()) {
     return CrabbingRetType::REDO_PESSIMISTICALLY;
   }
-  dir_guard.Drop();
+
+  // NOTE: should not drop dir guard here since another thread on the pessimistic path may update
+  //  the directory if they can get the write guard.
 
   // hold write lock
   WritePageGuard buk_guard = opt->UpgradeWrite();
