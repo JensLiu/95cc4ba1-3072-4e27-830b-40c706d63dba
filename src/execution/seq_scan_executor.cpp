@@ -12,6 +12,9 @@
 
 #include "execution/executors/seq_scan_executor.h"
 
+#include <concurrency/transaction_manager.h>
+#include <execution/execution_common.h>
+
 namespace bustub {
 
 SeqScanExecutor::SeqScanExecutor(ExecutorContext *exec_ctx, const SeqScanPlanNode *plan)
@@ -29,16 +32,19 @@ void SeqScanExecutor::Init() {
 auto SeqScanExecutor::Next(Tuple *tuple, RID *rid) -> bool {
   // since we are using iterator model, only one gets returned
   auto table_info = exec_ctx_->GetCatalog()->GetTable(plan_->GetTableOid());
+
   for (; !itr_->IsEnd(); ++*itr_) {
-    auto [meta, tpl] = itr_->GetTuple();
-    if (!meta.is_deleted_) {
+    const auto tpl = GetTupleSnapshot(exec_ctx_, static_cast<const AbstractPlanNode *>(plan_), *itr_);
+    if (tpl.has_value()) {
       if (plan_->filter_predicate_ == nullptr ||
-          plan_->filter_predicate_->Evaluate(&tpl, table_info->schema_).CastAs(TypeId::BOOLEAN).GetAs<bool>()) {
-        *tuple = tpl;
+          plan_->filter_predicate_->Evaluate(&tpl.value(), table_info->schema_).CastAs(TypeId::BOOLEAN).GetAs<bool>()) {
+        *tuple = *tpl;
         *rid = itr_->GetRID();
         ++*itr_;
         return true;
       }
+    } else {
+//      std::cout << "no value: " << itr_->GetTuple().second.ToString(&plan_->OutputSchema()) << "\n";
     }
   }
   return false;
