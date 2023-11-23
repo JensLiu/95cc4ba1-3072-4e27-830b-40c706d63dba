@@ -44,19 +44,16 @@ auto DeleteExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
       throw ExecutionException("delete executor: write-write conflict. trying to delete the future");
     }
 
-    // create undo log for the first delete
-    const auto first_modification = base_meta.ts_ != txn->GetTransactionId();
-    if (!table->UpdateTupleInPlace({txn->GetTransactionId(), true}, GenerateNullTupleForSchema(&table_info->schema_),
-                                   rid_to_remove, [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
-                                     return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
-                                   })) {
-      txn->SetTainted();
-      throw ExecutionException("delete executor: write-write conflict. another txn snicked in");
-    }
+    // already passed the initial write-write conflict test
 
-    if (first_modification) {
+    // race condition: transactions with the same read ts wanting to modify the same tuple both saw that
+    // the tuple is free to modify (passed the W-W conflict test because they have the same read ts) and
+    // go appended the log
+
+    // create undo log for the first delete
+    if (base_meta.ts_ != txn->GetTransactionId()) {  // first modification
       auto undo_log = GenerateDeleteLog(tuple_to_remove, &table_info->schema_, base_meta.ts_);
-      LinkIntoVersionChainCAS(undo_log, rid_to_remove, txn, txn_mngr);
+      LinkIntoVersionChainCAS(undo_log, rid_to_remove, txn, txn_mngr);  // ATOMIC
       txn->AppendWriteSet(table_info->oid_, rid_to_remove);
     } else {
       // it may be updated and then deleted, thus we need to update the partial schema to record all changes
@@ -69,8 +66,24 @@ auto DeleteExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
         // to other transactions
         auto undo_log = GenerateDeleteLog(tuple_snapshot.value(), &table_info->schema_, old_diff_log.ts_);
         undo_log.prev_version_ = old_diff_log.prev_version_;  // link into the chain
-        txn->ModifyUndoLog(link->prev_log_idx_, undo_log);
+        txn->ModifyUndoLog(link->prev_log_idx_, undo_log);    // ATOMIC
       }
+    }
+
+    // NOTE(jens): update the table heap in the last step to AVOID LOST VERSION
+    //  it may cause duplicated log in the table heap and the version chain.
+    //  when collecting logs and reconstructing tuples, the txn with the same ts would see
+    //  (1) the TABLE HEAP VERSION and use that without scanning the version chain, or
+    //  (2) when a newer txn updates the chain and the current log is pushed into the version chain,
+    //      the reconstructor just applying the SAME delta multiple times to the tuple, which does
+    //      not affect the integrity of the tuple
+    //  and the garbage collector will take care of the false logs when they are no longer accessed.
+    if (!table->UpdateTupleInPlace({txn->GetTransactionId(), true}, GenerateNullTupleForSchema(&table_info->schema_),
+                                   rid_to_remove, [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
+                                     return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
+                                   })) {
+      txn->SetTainted();
+      throw ExecutionException("delete executor: write-write conflict. another txn snicked in");
     }
 
     ++row_cnt;

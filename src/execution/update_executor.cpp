@@ -59,20 +59,9 @@ auto UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
       updated_values.push_back(expr->Evaluate(&tuple_to_update, table_info_->schema_));
     }
 
-    const auto first_modification = base_meta.ts_ != txn->GetTransactionId();
     const auto updated_tuple = Tuple{updated_values, &table_info_->schema_};
 
-    // race condition: transactions with the same read ts wanting to modify the same tuple
-    // we use atomic CAS function to update the tuple
-    if (!table->UpdateTupleInPlace({txn->GetTransactionId(), false}, updated_tuple, rid_to_update,
-                                   [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
-                                     return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
-                                   })) {
-      txn->SetTainted();
-      throw ExecutionException("update executor: write-write conflict, other transaction snicked in");
-    }
-
-    if (first_modification) {
+    if (base_meta.ts_ != txn->GetTransactionId()) {  // first modification
       auto undo_log =
           GenerateDiffLog(tuple_to_update, updated_values, &table_info_->schema_,
                           base_meta.ts_);  // use ts from base meta because it might be older than read ts of the txn
@@ -92,6 +81,18 @@ auto UpdateExecutor::Next([[maybe_unused]] Tuple *tuple, RID *rid) -> bool {
       // it can have no undo logs and has multiple modifications,
       // e.g. after insert a txn (ts = txn id) do multiple updates (ts = txn id)
       // in this case we do not need to put any diff logs since there's no need
+    }
+
+    // NOTE: race condition may happen and there might be duplicated log (with same ts and delta values)
+    //  but it does not affect the integrity of the tuple. If we mark the tuple in the table heap first
+    //  there will be a lost of old version between the tuple is marked ts = txn_id and the old log gets
+    //  pushed into the version chain.
+    if (!table->UpdateTupleInPlace({txn->GetTransactionId(), false}, updated_tuple, rid_to_update,
+                                   [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
+                                     return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
+                                   })) {
+      txn->SetTainted();
+      throw ExecutionException("update executor: write-write conflict, other transaction snicked in");
     }
 
     ++row_cnt;
