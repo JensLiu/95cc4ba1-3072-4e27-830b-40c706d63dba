@@ -15,6 +15,7 @@
 #include <memory>
 #include <utility>
 
+#include "execution/execution_common.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/insert_plan.h"
@@ -58,11 +59,19 @@ class InsertExecutor : public AbstractExecutor {
   /** The insert plan node to be executed*/
   const InsertPlanNode *plan_;
   std::unique_ptr<AbstractExecutor> child_executor_;
+  INSTALL_NON_BLOCKING_EXECUTOR_RETURN_HANDLER;
 
-  // to record if this is the first call of the batch to distinguish
-  // between zero insert and end of the batch
-  bool batch_begin_{true};
+  TableInfo *table_info_;
+  // NOTE(jens): since we do not allow index creation, it is okay to keep a local copy
+  std::vector<IndexInfo *> indexes_;
 
+  std::unique_ptr<TupleInsertHandler> tuple_insert_handler_;
+
+
+  auto TupleMayInsert(Tuple &tuple_to_insert) -> std::tuple<bool, std::string, std::optional<RID>>;
+  auto OnInsertCreateIndex(Tuple &tuple, RID &rid) -> std::pair<bool, std::string>;
+  auto HandleFreshInsert(Tuple &tuple) -> std::pair<bool, std::string>;
+  auto HandleDirtyInsert(Tuple &tuple, const RID &rid) -> std::pair<bool, std::string>;
 };
 
 }  // namespace bustub
