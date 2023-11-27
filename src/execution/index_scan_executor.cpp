@@ -10,6 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "execution/executors/index_scan_executor.h"
+#include "concurrency/transaction_manager.h"
+#include "execution/execution_common.h"
 #include "execution/expressions/comparison_expression.h"
 
 namespace bustub {
@@ -32,15 +34,25 @@ void IndexScanExecutor::Init() {
 }
 
 auto IndexScanExecutor::Next(Tuple *tuple, RID *rid) -> bool {
-  if (cursor == result_.size()) {
-    return false;
-  }
   // fetch from table
-  RID tmp_rid = result_[cursor++];
-  auto [tmp_meta, tmp_tuple] = table_info_->table_->GetTuple(tmp_rid);
-  *rid = tmp_rid;
-  *tuple = tmp_tuple;
-  return true;
+
+  while (cursor < result_.size()) {
+    RID table_heap_rid = result_[cursor++];
+    auto version_link = exec_ctx_->GetTransactionManager()->GetVersionLink(table_heap_rid);
+    if (version_link.has_value() && version_link->in_progress_) {
+      // in progress tuple cannot be accessed?
+      exec_ctx_->GetTransaction()->SetTainted();
+      throw ExecutionException("index scan executor: scanning tuple being updated by another txn");
+    }
+    auto [base_meta, base_tuple] = table_info_->table_->GetTuple(table_heap_rid);
+    const auto tuple_snapshot = GetTupleSnapshot(exec_ctx_, plan_, base_meta, base_tuple);
+    if (tuple_snapshot.has_value()) {
+      *rid = table_heap_rid;
+      *tuple = *tuple_snapshot;
+      return true;
+    }
+  }
+  return false;
 }
 
 }  // namespace bustub
