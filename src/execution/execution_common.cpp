@@ -134,7 +134,12 @@ void CollectUndoLinks(TransactionManager *txn_mgr, const RID &rid, const timesta
 
 auto GetTupleSnapshot(ExecutorContext *exec_ctx, const AbstractPlanNode *plan, TableIterator &itr)
     -> std::optional<Tuple> {
-  const auto [base_meta, base_tuple] = itr.GetTuple();
+  const auto &[base_meta, base_tuple] = itr.GetTuple();
+  return GetTupleSnapshot(exec_ctx, plan, base_meta, base_tuple);
+}
+
+auto GetTupleSnapshot(ExecutorContext *exec_ctx, const AbstractPlanNode *plan, const TupleMeta &base_meta,
+                      const Tuple &base_tuple) -> std::optional<Tuple> {
   const auto txn = exec_ctx->GetTransaction();
   const auto txn_read_ts = txn->GetReadTs();
   const auto base_ts = base_meta.ts_;
@@ -186,7 +191,7 @@ auto IsWriteWriteConflict(const TupleMeta &base_meta, timestamp_t read_ts, txn_i
 }
 
 auto GenerateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_values, const Schema *tuple_schema,
-                     timestamp_t read_ts) -> UndoLog {
+                     timestamp_t read_ts, bool is_previously_deleted) -> UndoLog {
   const auto col_cnt = tuple_schema->GetColumnCount();
   assert(updated_values.size() == col_cnt || updated_values.empty());
 
@@ -208,15 +213,17 @@ auto GenerateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_
     }
   }
   Schema diff_schema{diff_cols};
-  // there is no other scenarios where deleted flag is set to true
-  // because a record cannot be deleted and recovered
-  return {false, modified_fields, Tuple{diff_vals, &diff_schema}, read_ts};
+
+  // NOTE(jens): adding index support, see task 4.2, the log may have del marker
+  //  because inserting tuple with the same primary key ends up in the RID slot
+  return {is_previously_deleted, modified_fields, Tuple{diff_vals, &diff_schema}, read_ts};
 }
 
 auto UpdateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_values, const UndoLog &old_diff_log,
                    const Schema *tuple_schema) -> UndoLog {
   const auto col_cnt = tuple_schema->GetColumnCount();
-  assert(updated_values.size() == col_cnt && old_diff_log.modified_fields_.size() == col_cnt || updated_values.empty());
+  assert((updated_values.size() == col_cnt && old_diff_log.modified_fields_.size() == col_cnt) ||
+         updated_values.empty());
 
   auto modified_fields = old_diff_log.modified_fields_;
   std::vector<Column> diff_cols;
@@ -225,7 +232,7 @@ auto UpdateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_va
   const auto &old_partial_tuple = old_diff_log.tuple_;
   const auto old_partial_schema = ConstructPartialSchema(modified_fields, tuple_schema).first;
 
-  for (int i = 0, old_partial_col_idx = 0; i < col_cnt;  ++i) {
+  for (int i = 0, old_partial_col_idx = 0; i < col_cnt; ++i) {
     const auto &old_value = base_tuple.GetValue(tuple_schema, i);
     const auto &updated_value = updated_values.at(i);
     if (modified_fields[i]) {
@@ -242,22 +249,33 @@ auto UpdateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_va
     }
   }
   Schema diff_schema{diff_cols};
-  return {false, modified_fields, Tuple{diff_vals, &diff_schema}, old_diff_log.ts_, old_diff_log.prev_version_};
-
+  return {old_diff_log.is_deleted_, modified_fields, Tuple{diff_vals, &diff_schema}, old_diff_log.ts_,
+          old_diff_log.prev_version_};
 }
 
-auto GenerateDeleteLog(const Tuple &base_tuple, const Schema *tuple_schema, timestamp_t log_ts) -> UndoLog {
+auto GenerateFullLog(const Tuple &base_tuple, const Schema *tuple_schema, timestamp_t log_ts,
+                     bool is_previously_deleted) -> UndoLog {
   const auto col_cnt = tuple_schema->GetColumnCount();
   std::vector<bool> modified_fields;
   modified_fields.reserve(col_cnt);
   for (int i = 0; i < col_cnt; ++i) {
     modified_fields.push_back(true);
   }
-  return {false, modified_fields, base_tuple, log_ts};
+  return {is_previously_deleted, modified_fields, base_tuple, log_ts};
 }
 
-auto LinkIntoVersionChainCAS(UndoLog &undo_log, const RID &rid, Transaction *txn, TransactionManager *txn_mngr,
-                             std::function<bool(std::optional<UndoLink>)> &&check) -> UndoLink {
+auto GenerateDeleteMarker(const Schema *tuple_schema, timestamp_t log_ts) -> UndoLog {
+  std::vector<bool> modified_fields;
+  modified_fields.reserve(tuple_schema->GetColumnCount());
+  for (int i = 0; i < tuple_schema->GetColumnCount(); ++i) {
+    modified_fields.push_back(false);
+  }
+  Schema empty_schema{{}};
+  return {true, modified_fields, Tuple{{}, &empty_schema}, log_ts};
+}
+
+auto VersionChainPushFrontCAS(UndoLog &undo_log, const RID &rid, Transaction *txn, TransactionManager *txn_mngr,
+                              std::function<bool(std::optional<UndoLink>)> &&check) -> bool {
   // link to old versions
   const auto prev_version = txn_mngr->GetUndoLink(rid);
   if (prev_version.has_value()) {
@@ -268,9 +286,21 @@ auto LinkIntoVersionChainCAS(UndoLog &undo_log, const RID &rid, Transaction *txn
   const auto undo_link = txn->AppendUndoLog(undo_log);
 
   // update global version link
-  txn_mngr->UpdateUndoLink(rid, undo_link, std::move(check));
+  return txn_mngr->UpdateUndoLink(rid, undo_link, std::move(check));
+}
 
-  return undo_link;
+auto VersionUndoLinkPushFrontCAS(UndoLog &head_undo_log, const RID &rid, bool in_progress, Transaction *txn,
+                                 TransactionManager *txn_mngr,
+                                 std::function<bool(std::optional<VersionUndoLink>)> &&check) -> bool {
+  const auto prev_version_link = txn_mngr->GetVersionLink(rid);
+  if (prev_version_link.has_value()) {
+    std::cout << "previous version link exists\n";
+    head_undo_log.prev_version_ = prev_version_link->prev_;
+  }
+
+  const auto undo_link = txn->AppendUndoLog(head_undo_log);
+  return txn_mngr->UpdateVersionLink(rid, std::make_optional<VersionUndoLink>({undo_link, in_progress}),
+                                     std::move(check));
 }
 
 auto GenerateNullTupleForSchema(const Schema *schema) -> Tuple {
@@ -282,6 +312,229 @@ auto GenerateNullTupleForSchema(const Schema *schema) -> Tuple {
   }
 
   return {values, schema};
+}
+
+auto GetPrimaryKeyIndex(const std::vector<IndexInfo *> &indexes) -> std::optional<IndexInfo *> {
+  assert(indexes.empty() || indexes.size() == 1);
+  std::vector<RID> result;
+  for (auto &index : indexes) {
+    assert(index->is_primary_key_);
+    if (index->is_primary_key_) {
+      return {index};
+    }
+  }
+  return std::nullopt;
+}
+
+auto QueryRIDFromPrimaryKeyIndex(std::vector<IndexInfo *> &indexes, Tuple &tuple, Schema &tuple_schema,
+                                 Transaction *txn) -> std::optional<RID> {
+  std::vector<RID> result;
+  auto index = GetPrimaryKeyIndex(indexes);
+  if (!index.has_value()) {
+    return std::nullopt;
+  }
+  auto &idx_spanning_col_attrs = index.value()->index_->GetKeyAttrs();
+  assert(idx_spanning_col_attrs.size() == 1);
+  auto primary_key = tuple.KeyFromTuple(tuple_schema, index.value()->key_schema_, idx_spanning_col_attrs);
+  auto ht_index = dynamic_cast<HashTableIndexForTwoIntegerColumn *>(index.value()->index_.get());
+  assert(ht_index != nullptr);
+  ht_index->ScanKey(primary_key, &result, txn);
+  assert(result.empty() || result.size() == 1);
+  return result.empty() ? std::nullopt : std::make_optional<RID>(result[0]);
+}
+
+auto TupleInsertHandler::InsertTuple(Tuple &tuple) -> std::pair<bool, std::string> {
+  bool ok{false};
+  std::string err_msg;
+  std::optional<RID> rid;
+
+  // NOTE(jens): check for index conflict before insertion to prevent work in vain
+  // the task only has one primary key index
+  std::tie(ok, err_msg, rid) = TupleMayInsert(tuple);
+  if (!ok) {
+    return {false, err_msg};
+  }
+
+  // check if the primary index points to a deleted rid
+  if (rid.has_value()) {
+    std::tie(ok, err_msg) = HandleDirtyInsert(tuple, *rid);
+  } else {
+    std::tie(ok, err_msg) = HandleFreshInsert(tuple);
+  }
+  return {ok, err_msg};
+}
+
+auto TupleInsertHandler::HandleFreshInsert(Tuple &tuple) const -> std::pair<bool, std::string> {
+  const auto inserted_rid =
+      table_info_->table_->InsertTuple({txn_->GetTransactionId(), false}, tuple, lk_mngr_, txn_, table_info_->oid_);
+  // NOTE(jens): if an index scan is executing after a tuple is inserted into the table heap but
+  //  before the index is updated, it may not see the tuple (unless we lock the index)
+
+  if (!inserted_rid.has_value()) {  // failed to insert
+    txn_->SetTainted();
+    return {false, "failed to insert"};
+  }
+
+  // append to write list so that commit can finalise these entries by changing its ts to commit ts
+  txn_->AppendWriteSet(table_info_->oid_, *inserted_rid);
+
+  // set empty version link, since this is an insert and no president tuple.
+  // (other txns cannot see it since ts = txn_id)
+  txn_mngr_->UpdateVersionLink(*inserted_rid, std::nullopt);
+
+  // insert to index
+  if (const auto &[ok, err_msg] = OnInsertCreateIndex(tuple, *inserted_rid); !ok) {
+    return {false, err_msg};
+  }
+
+  return {true, ""};
+}
+auto TupleInsertHandler::HandleDirtyInsert(const Tuple &tuple, const RID &rid) const -> std::pair<bool, std::string> {
+  // 'lock' other transactions from updating the index
+
+  // insert a new undo log into the front
+  const auto &[base_meta, base_tuple] = table_info_->table_->GetTuple(rid);
+
+  const bool is_first_modification = base_meta.ts_ != txn_->GetTransactionId();
+  if (is_first_modification) {
+    assert(base_meta.ts_ < TXN_START_ID);
+
+    // update, lock the version link
+    // no race condition, only one update will atomically set in_progress and the other will fail
+    if (auto new_undo_log = GenerateDeleteMarker(&table_info_->schema_, base_meta.ts_); !VersionUndoLinkPushFrontCAS(
+            new_undo_log, rid, /* in_progress */ true, txn_, txn_mngr_,
+            [](std::optional<VersionUndoLink> link) -> bool {
+              // CAS check function, atomic
+              if (link.has_value()) {
+                return !link->in_progress_;  // if the current link is not in progress, we can insert
+              }
+              return true;  // if the there's no undo link, we can surely insert
+            })) {
+      // this is a CAS change, failing means that other txn is already modifying the index
+      return {false, "write-write conflict. another txn snicked in"};
+    }
+  }
+
+  // 'lock' other transactions from updating the value while inserting
+  // NOTE: other transactions cannot update the value because to them, this tuple is deleted
+  //  it is not visible from sequential scan, and only visible from index scan.
+  if (const auto txn_forward = txn_; !table_info_->table_->UpdateTupleInPlace(
+          {txn_->GetTransactionId(), false}, tuple, rid,
+          /*CAS check*/ [&txn_forward](const TupleMeta &meta, const Tuple &table, RID) -> bool {
+            return meta.ts_ <= txn_forward->GetReadTs() || meta.ts_ == txn_forward->GetTransactionId();
+          })) {
+    // cannot happen because this record can only be accessed by index at the moment
+    // and any other txn wanting to insert will see that the version link in progress
+    // and abort...
+    assert(0);
+  }
+
+  if (is_first_modification) {
+    // clear in_progress flag
+    const auto in_progress_version_link = txn_mngr_->GetVersionLink(rid);
+    assert(in_progress_version_link.has_value());
+    // no need to use CAS because only this txn can access it
+    txn_mngr_->UpdateVersionLink(rid, std::make_optional<VersionUndoLink>({in_progress_version_link->prev_, false}));
+    // append to write list so that commit can finalise these entries by changing its ts to commit ts
+    txn_->AppendWriteSet(table_info_->oid_, rid);
+  }
+
+  return {true, ""};
+}
+
+auto TupleInsertHandler::OnInsertCreateIndex(Tuple &tuple, const RID &rid) const -> std::pair<bool, std::string> {
+  const auto index_opt = GetPrimaryKeyIndex(indexes_);
+  if (!index_opt.has_value()) {
+    return {true, "no primary key index"};
+  }
+  const auto index = index_opt.value();
+  auto &idx_spanning_col_attrs = index->index_->GetKeyAttrs();
+  assert(idx_spanning_col_attrs.size() == 1);
+  const auto key_to_insert = tuple.KeyFromTuple(table_info_->schema_, index->key_schema_, idx_spanning_col_attrs);
+  if (!index->index_->InsertEntry(key_to_insert, rid, txn_)) {
+    return {false, "write-write conflict. some txn snicked in"};
+  }
+  return {true, ""};
+}
+
+auto TupleInsertHandler::TupleMayInsert(Tuple &tuple_to_insert) -> std::tuple<bool, std::string, std::optional<RID>> {
+  // only supports primary key
+  const auto rid = QueryRIDFromPrimaryKeyIndex(indexes_, tuple_to_insert, table_info_->schema_, txn_);
+  if (rid.has_value()) {
+    const auto &[base_meta, base_tuple] = table_info_->table_->GetTuple(*rid);
+    if (base_meta.ts_ > txn_->GetReadTs() && base_meta.ts_ != txn_->GetTransactionId()) {
+      return {false, "write-write conflict", std::nullopt};
+    }
+    // ts <= txn_read_ts or ts = txn_id
+    if (!base_meta.is_deleted_) {
+      return {false, "violation of unique primary key constraint", std::nullopt};
+    }
+    // check not in progress
+    const auto &version_link = txn_mngr_->GetVersionLink(*rid);
+    if (version_link.has_value() && version_link->in_progress_ && base_meta.ts_ != txn_->GetTransactionId()) {
+      return {false, "write-write conflict", std::nullopt};
+    }
+  }
+
+  return {true, "", rid};
+}
+
+auto TupleDeleteHandler::DeleteTuple(const RID &rid) -> std::pair<bool, std::string> {
+  const auto &table = table_info_->table_;
+  // its child is a sequential scan or a filter
+
+  auto [base_meta, base_tuple] = table->GetTuple(rid);
+  if (IsWriteWriteConflict(base_meta, txn_->GetReadTs(), txn_->GetTransactionId())) {
+    return {false, "write-write conflict. trying to delete the future"};
+  }
+
+  // already passed the initial write-write conflict test
+
+  // race condition: transactions with the same read ts wanting to modify the same tuple both saw that
+  // the tuple is free to modify (passed the W-W conflict test because they have the same read ts) and
+  // go appended the log
+
+  // create undo log for the first delete
+  if (base_meta.ts_ != txn_->GetTransactionId()) {  // first modification
+    auto undo_log = GenerateFullLog(base_tuple, &table_info_->schema_, base_meta.ts_, base_meta.is_deleted_);
+    VersionChainPushFrontCAS(undo_log, rid, txn_, txn_mngr_);  // ATOMIC
+    txn_->AppendWriteSet(table_info_->oid_, rid);
+  } else {
+    // it may be updated and then deleted, thus we need to update the partial schema to record all changes
+    // now since base_ts = txn_id, no other txns can update this tuple in table heap, they can only read it
+    const auto link = txn_mngr_->GetUndoLink(rid);
+    if (link.has_value()) {
+      const auto old_diff_log = txn_mngr_->GetUndoLog(link.value());
+      const auto tuple_snapshot = ReconstructTuple(&table_info_->schema_, base_tuple, base_meta, {old_diff_log});
+      assert(tuple_snapshot.has_value());
+      // use snapshot value because the current table heap tuple may be modified by the txn and should not be visible
+      // to other transactions
+      auto undo_log =
+          GenerateFullLog(tuple_snapshot.value(), &table_info_->schema_, old_diff_log.ts_, old_diff_log.is_deleted_);
+      undo_log.prev_version_ = old_diff_log.prev_version_;  // link into the chain
+      txn_->ModifyUndoLog(link->prev_log_idx_, undo_log);   // ATOMIC
+    }
+  }
+
+  // NOTE(jens): update the table heap in the last step to AVOID LOST VERSION
+  //  it may cause duplicated log in the table heap and the version chain.
+  //  when collecting logs and reconstructing tuples, the txn with the same ts would see
+  //  (1) the TABLE HEAP VERSION and use that without scanning the version chain, or
+  //  (2) when a newer txn updates the chain and the current log is pushed into the version chain,
+  //      the reconstructor just applying the SAME delta multiple times to the tuple, which does
+  //      not affect the integrity of the tuple
+  //  and the garbage collector will take care of the false logs when they are no longer accessed.
+  if (const auto txn_forward = txn_;
+      !table->UpdateTupleInPlace({txn_->GetTransactionId(), true}, GenerateNullTupleForSchema(&table_info_->schema_),
+                                 rid, [&txn_forward](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
+                                   return meta.ts_ < TXN_START_ID || meta.ts_ == txn_forward->GetTransactionId();
+                                 })) {
+    return {false, "write-write conflict. another txn snicked in"};
+  }
+
+  // NOTE(jens): we do not delete index since older txns can read the earlier version of the tuple
+  //  once created, the index would always point to the same RID
+  return {true, ""};
 }
 
 void TxnMgrDbg(const std::string &info, TransactionManager *txn_mgr, const TableInfo *table_info,
@@ -349,9 +602,13 @@ void TxnMgrDbg(const std::string &info, TransactionManager *txn_mgr, const Table
     const auto [base_meta, base_tuple] = itr.GetTuple();
     const auto rid = itr.GetRID();
     // for each record
-    fmt::println(stdout, "RID={}/{} ts={} {} tuple={}", rid.GetPageId(), rid.GetSlotNum(),
+
+    auto version_link = txn_mgr->GetVersionLink(rid);
+
+    fmt::println(stdout, "RID={}/{} ts={} {} tuple={} {}", rid.GetPageId(), rid.GetSlotNum(),
                  make_ts_string(base_meta.ts_), base_meta.is_deleted_ ? "<del marker>" : "",
-                 base_tuple.ToString(&table_info->schema_));
+                 base_tuple.ToString(&table_info->schema_),
+                 version_link.has_value() && version_link->in_progress_ ? " -> in progress" : "");
 
     std::vector<UndoLink> links;
     CollectUndoLinks(txn_mgr, rid, -1, &links);  // get all undo logs of the tuple (until_ts = -1)

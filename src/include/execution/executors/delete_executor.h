@@ -20,6 +20,7 @@
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/delete_plan.h"
 #include "storage/table/tuple.h"
+#include "execution/execution_common.h"
 
 namespace bustub {
 
@@ -62,8 +63,9 @@ class DeleteExecutor : public AbstractExecutor {
   /** The child executor from which RIDs for deleted tuples are pulled */
   std::unique_ptr<AbstractExecutor> child_executor_;
 
-  // to record if this is the first call of the batch to distinguish
-  // between zero insert and end of the batch
-  bool batch_begin_{true};
+  INSTALL_NON_BLOCKING_EXECUTOR_RETURN_HANDLER;
+
+  std::unique_ptr<TupleDeleteHandler> tuple_delete_handler_;
+
 };
 }  // namespace bustub
