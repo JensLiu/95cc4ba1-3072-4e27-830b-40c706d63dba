@@ -87,8 +87,8 @@ auto UpdateExecutor::Next([[maybe_unused]] Tuple *tuple_ret, RID * /*rid*/) -> b
   BLOCKING_EXECUTOR_BEGIN_EXEC
 
   int row_cnt = 0;
-
   if (is_pk_attribute_modifier_) {
+    assert(0);
     row_cnt = UpdateModifyingPKAttributes();
   } else {
     row_cnt = UpdateWithoutModifyingPKAttributes();
@@ -102,7 +102,7 @@ auto UpdateExecutor::Next([[maybe_unused]] Tuple *tuple_ret, RID * /*rid*/) -> b
 
 auto UpdateExecutor::UpdateModifyingPKAttributes() -> int {
   const auto txn = exec_ctx_->GetTransaction();
-  TxnMgrDbg("before deletion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
+  //  TxnMgrDbg("before deletion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
   // NOTE(jens): the delete handler checks for write-write conflict and marks the
   //  tuple deleted in the table heap. it changes its ts to txn_id, so that
   //  operations after would not have any conflicts
@@ -113,10 +113,9 @@ auto UpdateExecutor::UpdateModifyingPKAttributes() -> int {
     }
   }
 
-  TxnMgrDbg("after deletion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
+  //  TxnMgrDbg("after deletion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
 
   for (auto &[rid, tuple] : update_buffer_) {
-
     std::vector<Value> updated_values;
     for (auto &expr : plan_->target_expressions_) {
       updated_values.push_back(expr->Evaluate(&tuple, table_info_->schema_));
@@ -129,7 +128,7 @@ auto UpdateExecutor::UpdateModifyingPKAttributes() -> int {
     }
   }
 
-  TxnMgrDbg("after insertion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
+  //  TxnMgrDbg("after insertion", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
 
   return update_buffer_.size();
 }
@@ -152,17 +151,31 @@ auto UpdateExecutor::UpdateWithoutModifyingPKAttributes() -> int {
     auto [base_meta, base_tuple] = table->GetTuple(rid);
 
     // check for write-write conflict
+    //    {
+    //      const auto base_ts = base_meta.ts_;
+    //      const auto txn_id = txn->GetTransactionId();
+    //      const auto read_ts = txn->GetReadTs();
+    //      if (base_ts < TXN_START_ID) {
+    //        fmt::println("rid: {}/{}, base_ts={} read_ts={} txn_id={} ", rid.GetPageId(), rid.GetSlotNum(), base_ts,
+    //                     read_ts, txn_id - TXN_START_ID);
+    //      } else {
+    //        fmt::println("rid: {}/{}, using_txn={} current_txn={} ", rid.GetPageId(), rid.GetSlotNum(),
+    //                     base_ts - TXN_START_ID, txn_id - TXN_START_ID);
+    //      }
+    //    }
     if (IsWriteWriteConflict(base_meta, txn->GetReadTs(), txn->GetTransactionId())) {
+      //      fmt::println("write-write conflict, abort txn={} ", txn->GetTransactionId() - TXN_START_ID);
       txn->SetTainted();
       throw ExecutionException("update executor: write-write conflict. trying to rewrite the future");
     }
 
     // we are now modifying the base tuple
-    TxnMgrDbg("before insert", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
-    assert(IsTupleContentEqual(tuple, base_tuple));
+    //    TxnMgrDbg("before insert", exec_ctx_->GetTransactionManager(), table_info_, table_info_->table_.get());
+    //    assert(IsTupleContentEqual(tuple, base_tuple));
 
     // update tuple
     if (const auto &[ok, err_msg] = HandleNonPKAttributesUpdate(base_meta, base_tuple, rid); !ok) {
+      //      fmt::println("update conflict, abort txn={} ", txn->GetTransactionId() - TXN_START_ID);
       txn->SetTainted();
       throw ExecutionException("update executor: " + err_msg);
     }
@@ -183,11 +196,21 @@ auto UpdateExecutor::HandleNonPKAttributesUpdate(TupleMeta &base_meta, Tuple &ba
   }
   const auto updated_tuple = Tuple{updated_values, &table_info_->schema_};
 
-  if (base_meta.ts_ != txn->GetTransactionId()) {  // first modification
-    auto undo_log = GenerateDiffLog(
-        base_tuple, updated_values, &table_info_->schema_, base_meta.ts_,
-        base_meta.is_deleted_);  // use ts from base meta because it might be older than read ts of the txn
-    VersionChainPushFrontCAS(undo_log, rid, txn, txn_mngr);
+  bool first_modification = base_meta.ts_ != txn->GetTransactionId();
+  if (first_modification) {  // first modification
+    // use ts from base meta because it might be older than read ts of the txn
+    auto undo_log =
+        GenerateDiffLog(base_tuple, updated_values, &table_info_->schema_, base_meta.ts_, base_meta.is_deleted_);
+    if (!VersionChainPushFrontCAS(undo_log, rid, txn, txn_mngr,
+                                  [txn_mngr, undo_log](std::optional<UndoLink> head_undo_link) -> bool {
+                                    if (head_undo_link.has_value()) {
+                                      const auto head_log = txn_mngr->GetUndoLog(*head_undo_link);
+                                      return head_log.ts_ < undo_log.ts_;
+                                    }
+                                    return true;
+                                  })) {
+      return {false, "another txn snicked in"};
+    }
     txn->AppendWriteSet(table_info_->oid_, rid);
   } else {  // not the first modification
     // if multiple updates take place, we may need to add some newly changed fields to the undo log
@@ -213,13 +236,12 @@ auto UpdateExecutor::HandleNonPKAttributesUpdate(TupleMeta &base_meta, Tuple &ba
     // in this case we do not need to put any diff logs since there's no need
   }
 
-  // NOTE: race condition may happen and there might be duplicated log (with same ts and delta values)
-  //  but it does not affect the integrity of the tuple. If we mark the tuple in the table heap first
-  //  there will be a lost of old version between the tuple is marked ts = txn_id and the old log gets
-  //  pushed into the version chain.
   if (!table->UpdateTupleInPlace({txn->GetTransactionId(), false}, updated_tuple, rid,
-                                 [txn](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
-                                   return meta.ts_ < TXN_START_ID || meta.ts_ == txn->GetTransactionId();
+                                 [txn, first_modification](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
+                                   if (first_modification) {
+                                     return meta.ts_ < TXN_START_ID;
+                                   }
+                                   return meta.ts_ == txn->GetTransactionId();
                                  })) {
     return {false, "update executor: write-write conflict, other transaction snicked in"};
   }

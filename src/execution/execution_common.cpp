@@ -490,14 +490,19 @@ auto TupleDeleteHandler::DeleteTuple(const RID &rid) -> std::pair<bool, std::str
 
   // already passed the initial write-write conflict test
 
-  // race condition: transactions with the same read ts wanting to modify the same tuple both saw that
-  // the tuple is free to modify (passed the W-W conflict test because they have the same read ts) and
-  // go appended the log
-
   // create undo log for the first delete
   if (base_meta.ts_ != txn_->GetTransactionId()) {  // first modification
     auto undo_log = GenerateFullLog(base_tuple, &table_info_->schema_, base_meta.ts_, base_meta.is_deleted_);
-    VersionChainPushFrontCAS(undo_log, rid, txn_, txn_mngr_);  // ATOMIC
+    const auto txn_mngr_forward = txn_mngr_;
+    // race condition is avoid by CAS checking
+    VersionChainPushFrontCAS(undo_log, rid, txn_, txn_mngr_,
+                             [txn_mngr_forward, undo_log](std::optional<UndoLink> head_undo_link) -> bool {
+                               if (head_undo_link.has_value()) {
+                                 const auto head_log = txn_mngr_forward->GetUndoLog(*head_undo_link);
+                                 return head_log.ts_ < undo_log.ts_;
+                               }
+                               return true;
+                             });  // ATOMIC
     txn_->AppendWriteSet(table_info_->oid_, rid);
   } else {
     // it may be updated and then deleted, thus we need to update the partial schema to record all changes
@@ -517,13 +522,6 @@ auto TupleDeleteHandler::DeleteTuple(const RID &rid) -> std::pair<bool, std::str
   }
 
   // NOTE(jens): update the table heap in the last step to AVOID LOST VERSION
-  //  it may cause duplicated log in the table heap and the version chain.
-  //  when collecting logs and reconstructing tuples, the txn with the same ts would see
-  //  (1) the TABLE HEAP VERSION and use that without scanning the version chain, or
-  //  (2) when a newer txn updates the chain and the current log is pushed into the version chain,
-  //      the reconstructor just applying the SAME delta multiple times to the tuple, which does
-  //      not affect the integrity of the tuple
-  //  and the garbage collector will take care of the false logs when they are no longer accessed.
   if (const auto txn_forward = txn_;
       !table->UpdateTupleInPlace({txn_->GetTransactionId(), true}, GenerateNullTupleForSchema(&table_info_->schema_),
                                  rid, [&txn_forward](const TupleMeta &meta, const Tuple &tuple, RID rid) -> bool {
