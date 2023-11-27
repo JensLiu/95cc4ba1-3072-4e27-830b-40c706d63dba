@@ -67,8 +67,20 @@ class UpdateExecutor : public AbstractExecutor {
   /** The child executor to obtain value from */
   std::unique_ptr<AbstractExecutor> child_executor_;
 
-  // to record if this is the first call of the batch to distinguish
-  // between zero insert and end of the batch
-  bool batch_begin_{true};
+  std::vector<std::pair<RID, Tuple>> update_buffer_;
+
+  uint32_t cursor_;
+
+  bool is_pk_attribute_modifier_{false};
+
+  INSTALL_BLOCKING_EXECUTOR_RETURN_HANDLER;
+
+  std::unique_ptr<TupleInsertHandler> tuple_insert_handler_;
+  std::unique_ptr<TupleDeleteHandler> tuple_delete_handler_;
+
+  auto IsModifyingPKAttributes() -> bool;
+  auto HandleNonPKAttributesUpdate(TupleMeta &base_meta, Tuple &base_tuple, RID &rid) -> std::pair<bool, std::string>;
+  auto UpdateWithoutModifyingPKAttributes() -> int;
+  auto UpdateModifyingPKAttributes() -> int;
 };
 }  // namespace bustub
