@@ -511,13 +511,15 @@ auto TupleDeleteHandler::DeleteTuple(const RID &rid) -> std::pair<bool, std::str
     if (link.has_value()) {
       const auto old_diff_log = txn_mngr_->GetUndoLog(link.value());
       const auto tuple_snapshot = ReconstructTuple(&table_info_->schema_, base_tuple, base_meta, {old_diff_log});
-      assert(tuple_snapshot.has_value());
-      // use snapshot value because the current table heap tuple may be modified by the txn and should not be visible
-      // to other transactions
-      auto undo_log =
-          GenerateFullLog(tuple_snapshot.value(), &table_info_->schema_, old_diff_log.ts_, old_diff_log.is_deleted_);
-      undo_log.prev_version_ = old_diff_log.prev_version_;  // link into the chain
-      txn_->ModifyUndoLog(link->prev_log_idx_, undo_log);   // ATOMIC
+      if (tuple_snapshot.has_value()) {
+        // use snapshot value because the current table heap tuple may be modified by the txn and should not be visible
+        // to other transactions
+        auto undo_log =
+            GenerateFullLog(tuple_snapshot.value(), &table_info_->schema_, old_diff_log.ts_, old_diff_log.is_deleted_);
+        undo_log.prev_version_ = old_diff_log.prev_version_;  // link into the chain
+        txn_->ModifyUndoLog(link->prev_log_idx_, undo_log);   // ATOMIC
+      }
+      // it might be the case that the previous log is a delete marker, hence no snapshot
     }
   }
 
