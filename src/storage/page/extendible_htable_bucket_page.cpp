@@ -116,7 +116,7 @@ auto ExtendibleHTableBucketPage<K, V, KC>::GetOneSlot() -> int {
 
 template <typename K, typename V, typename KC>
 void ExtendibleHTableBucketPage<K, V, KC>::PutOneSlot(int idx) {
-  // TODO: do not move entries, it's expensive!
+  // NOTE: this is expensive, we can use bitmap
   //  since we have no means of tracking whether a slot is free nor not we have to do a
   //  move now, otherwise adding additional metadata corrupts the data format that are stored on the disk
   assert(idx >= 0 && idx < static_cast<int>(size_));

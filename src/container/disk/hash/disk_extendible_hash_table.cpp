@@ -100,10 +100,7 @@ auto DiskExtendibleHashTable<K, V, KC>::Insert(const K &key, const V &value, Tra
   if (ret == CrabbingRetType::REDO_PESSIMISTICALLY) {
     ret = InsertPessimistically(key, value, transaction);
   }
-  if (ret == CrabbingRetType::SUCCESS) {
-    return true;
-  }
-  return false;
+  return ret == CrabbingRetType::SUCCESS;
 }
 
 // crabbing algorithm

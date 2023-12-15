@@ -67,13 +67,13 @@ auto UpdateExecutor::IsModifyingPKAttributes() -> bool {
   const auto &expressions = plan_->target_expressions_;
 
   assert(index != nullptr);
-  for (int col_idx = 0; col_idx < expressions.size(); ++col_idx) {
+  for (uint32_t col_idx = 0; col_idx < expressions.size(); ++col_idx) {
     auto expr = expressions[col_idx];
     auto col_expr = dynamic_cast<ColumnValueExpression *>(expr.get());
-    auto val_expr = dynamic_cast<ConstantValueExpression *>(expr.get());
+    //    auto val_expr = dynamic_cast<ConstantValueExpression *>(expr.get());
     if (col_expr != nullptr) {
       // identity
-      assert(col_expr->GetColIdx() == col_idx);
+      assert(col_expr->GetColIdx() == static_cast<uint32_t>(col_idx));
     } else {
       if (pk_col_idxes.count(col_idx) > 0) {
         return true;
@@ -88,7 +88,6 @@ auto UpdateExecutor::Next([[maybe_unused]] Tuple *tuple_ret, RID * /*rid*/) -> b
 
   int row_cnt = 0;
   if (is_pk_attribute_modifier_) {
-    assert(0);
     row_cnt = UpdateModifyingPKAttributes();
   } else {
     row_cnt = UpdateWithoutModifyingPKAttributes();

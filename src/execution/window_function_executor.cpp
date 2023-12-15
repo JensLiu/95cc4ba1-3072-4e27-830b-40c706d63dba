@@ -58,7 +58,7 @@ auto WindowFunctionExecutor::Next(Tuple *tuple, RID *rid) -> bool {
 
   const auto *input_schema = &child_executor_->GetOutputSchema();
   const auto *output_schema = plan_->output_schema_.get();
-  const auto output_size = output_schema->GetColumnCount();
+  //  const auto output_size = output_schema->GetColumnCount();
 
   while (true) {
     if (cursor_ == tuple_store_.size()) {

@@ -115,7 +115,7 @@ TEST(TxnIndexTest, DISABLED_InsertDeleteTest) {  // NOLINT
                                     IntResult{{1, 0}, {2, 0}, {3, 0}, {4, 0}}));
 }
 
-TEST(TxnIndexTest, DISABLED_UpdateTest) {  // NOLINT
+TEST(TxnIndexTest, UpdateTest) {  // NOLINT
   const std::string query = "SELECT * FROM maintable";
 
   const auto prepare =
@@ -127,9 +127,13 @@ TEST(TxnIndexTest, DISABLED_UpdateTest) {  // NOLINT
     auto txn1_reverify = BeginTxn(*bustub, "txn1_reverify");
     auto txn2 = BeginTxn(*bustub, "txn2");
     WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 2"));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
     WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "INSERT INTO maintable VALUES (3, 0), (5, 0)"));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
     WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 3"));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
     WithTxn(txn2, CommitTxn(*bustub, _var, _txn));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
     auto txn2_reverify = BeginTxn(*bustub, "txn2_reverify");
     // at this point, we have (1, 0) inserted, (2, 0) deleted, and (3, 0) self inserted and deleted.
     auto txn3 = BeginTxn(*bustub, "txn3");
@@ -212,6 +216,83 @@ TEST(TxnIndexTest, DISABLED_UpdateTest) {  // NOLINT
   // hidden tests...
 }
 
+TEST(TxnIndexTest, UpdateTestHidden) {  // NOLINT
+  const std::string query = "SELECT * FROM maintable";
+
+  const auto prepare =
+      [](std::unique_ptr<BustubInstance> &bustub) -> std::tuple<Transaction *, Transaction *, Transaction *> {
+    auto table_info = bustub->catalog_->GetTable("maintable");
+    auto txn1 = BeginTxn(*bustub, "txn1");
+    WithTxn(txn1, ExecuteTxn(*bustub, _var, _txn, "INSERT INTO maintable VALUES (1, 0), (2, 0)"));
+    WithTxn(txn1, CommitTxn(*bustub, _var, _txn));
+    auto txn1_reverify = BeginTxn(*bustub, "txn1_reverify");
+    auto txn2 = BeginTxn(*bustub, "txn2");
+    WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 2"));
+    WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "INSERT INTO maintable VALUES (3, 0), (5, 0)"));
+    WithTxn(txn2, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 3"));
+    WithTxn(txn2, CommitTxn(*bustub, _var, _txn));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+    auto txn2_reverify = BeginTxn(*bustub, "txn2_reverify");
+    // at this point, we have (1, 0) inserted, (2, 0) deleted, and (3, 0) self inserted and deleted.
+    auto txn3 = BeginTxn(*bustub, "txn3");
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "INSERT INTO maintable VALUES (4, 0), (6, 0)"));
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 5"));
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable WHERE col1 = 6"));
+    TxnMgrDbg("after preparation", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+    // at this point, we have (4, 0) inserted, (5, 0) deleted, and (6, 0) self inserted and deleted.
+    return {txn1_reverify, txn2_reverify, txn3};
+  };
+
+  const auto reverify = [](std::unique_ptr<BustubInstance> &bustub, Transaction *txn1_reverify,
+                           Transaction *txn2_reverify, const std::string &query) {
+    WithTxn(txn1_reverify, QueryShowResult(*bustub, _var, _txn, query, IntResult{{1, 0}, {2, 0}}));
+    WithTxn(txn1_reverify, QueryIndex(*bustub, _var, _txn, query, "col1", std::vector<int>{1, 2, 3, 4, 5, 6},
+                                      IntResult{{1, 0}, {2, 0}, {}, {}, {}, {}}));
+    WithTxn(txn2_reverify, QueryShowResult(*bustub, _var, _txn, query, IntResult{{1, 0}, {5, 0}}));
+    WithTxn(txn2_reverify, QueryIndex(*bustub, _var, _txn, query, "col1", std::vector<int>{1, 2, 3, 4, 5, 6},
+                                      IntResult{{1, 0}, {}, {}, {}, {5, 0}, {}}));
+  };
+
+  {
+    fmt::println(stderr, "---- UpdateTest3: insert, update, and commit ----");
+    auto bustub = std::make_unique<BustubInstance>();
+    EnsureIndexScan(*bustub);
+    Execute(*bustub, "CREATE TABLE maintable(col1 int primary key, col2 int)");
+    auto table_info = bustub->catalog_->GetTable("maintable");
+    auto [txn1_reverify, txn2_reverify, txn3] = prepare(bustub);
+    WithTxn(txn3, QueryShowResult(*bustub, _var, _txn, query, IntResult{{1, 0}, {4, 0}}));
+    WithTxn(txn3, QueryIndex(*bustub, _var, _txn, query, "col1", std::vector<int>{1, 2, 3, 4, 5, 6},
+                             IntResult{{1, 0}, {}, {}, {4, 0}, {}, {}}));
+
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "INSERT INTO maintable VALUES (2, 1), (5, 1), (3, 1), (6, 1)"));
+    TxnMgrDbg("after txn3 insert operations", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "UPDATE maintable SET col2 = col2 + 10"));
+    TxnMgrDbg("after txn3 update operations", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+    WithTxn(txn3, QueryShowResult(*bustub, _var, _txn, query,
+                                  IntResult{
+                                      {1, 10},
+                                      {2, 11},
+                                      {3, 11},
+                                      {4, 10},
+                                      {5, 11},
+                                      {6, 11},
+                                  }));
+    WithTxn(txn3, QueryIndex(*bustub, _var, _txn, query, "col1", std::vector<int>{1, 2, 3, 4, 5, 6},
+                             IntResult{
+                                 {1, 10},
+                                 {2, 11},
+                                 {3, 11},
+                                 {4, 10},
+                                 {5, 11},
+                                 {6, 11},
+                             }));
+    TxnMgrDbg("before delete", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+    WithTxn(txn3, ExecuteTxn(*bustub, _var, _txn, "DELETE FROM maintable"));
+    TxnMgrDbg("after delete", bustub->txn_manager_.get(), table_info, table_info->table_.get());
+  }
+  // hidden tests...
+}
+
 TEST(GradingTxnIndexTest, DISABLED_IndexUpdateConflictTest) {  // NOLINT
   const std::string query = "SELECT * FROM maintable";
 
@@ -236,7 +317,7 @@ TEST(GradingTxnIndexTest, DISABLED_IndexUpdateConflictTest) {  // NOLINT
   // hidden tests...
 }
 
-TEST(TxnIndexTest, DISABLED_UpdatePrimaryKeyTest) {  // NOLINT
+TEST(TxnIndexTest, UpdatePrimaryKeyTest) {  // NOLINT
   const std::string query = "SELECT * FROM maintable";
 
   auto bustub = std::make_unique<BustubInstance>();

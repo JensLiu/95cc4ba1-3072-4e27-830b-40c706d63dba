@@ -31,31 +31,6 @@ auto Optimizer::OptimizeMergeFilterScan(const AbstractPlanNodeRef &plan) -> Abst
     if (child_plan.GetType() == PlanType::SeqScan) {
       const auto &seq_scan_plan = dynamic_cast<const SeqScanPlanNode &>(child_plan);
 
-      // check index
-      const auto *predicate_single = dynamic_cast<const ComparisonExpression *>(filter_plan.predicate_.get());
-      if (predicate_single != nullptr && predicate_single->comp_type_ == ComparisonType::Equal) {
-        // for single comparison expression (without 'AND' or 'OR')
-        BUSTUB_ASSERT(predicate_single->GetChildren().size() == 2,
-                      "Comparison expression should have exactly two children");
-        const auto indexes = catalog_.GetTableIndexes(seq_scan_plan.table_name_);
-        const auto &col_idx =
-            dynamic_cast<const ColumnValueExpression *>(predicate_single->GetChildAt(0).get())->GetColIdx();
-        const auto &filter_col_name = catalog_.GetTable(seq_scan_plan.table_oid_)->schema_.GetColumn(col_idx).GetName();
-
-        const IndexInfo *found_idx = nullptr;
-        for (auto &idx_info : indexes) {
-          const auto &idx_col_name = idx_info->key_schema_.GetColumn(0).GetName();
-          if (filter_col_name == idx_col_name) {
-            found_idx = idx_info;
-            break;
-          }
-        }
-        if (found_idx != nullptr) {
-          return std::make_shared<IndexScanPlanNode>(filter_plan.output_schema_, seq_scan_plan.table_oid_,
-                                              found_idx->index_oid_, filter_plan.GetPredicate());
-        }
-      }
-
       // push down the predicate
       if (seq_scan_plan.filter_predicate_ == nullptr) {
         return std::make_shared<SeqScanPlanNode>(filter_plan.output_schema_, seq_scan_plan.table_oid_,

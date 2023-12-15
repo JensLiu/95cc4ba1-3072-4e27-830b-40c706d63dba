@@ -82,7 +82,7 @@ auto HashJoinExecutor::Next(Tuple *tuple, RID *rid) -> bool {
     }
     auto &left_tuples = ht_itr_->second.left_tuples_;
     auto &right_tuples = ht_itr_->second.right_tuples_;
-    if (!left_tuples.empty()) { // if left tuples are empty, skip the sub nested loop
+    if (!left_tuples.empty()) {  // if left tuples are empty, skip the sub nested loop
       while (rhs_cursor_ < ht_itr_->second.right_tuples_.size()) {
         hash_join_emit_null_ = false;
         *tuple = MergeTuples(&left_tuples[lhs_cursor_], &left_executor_->GetOutputSchema(), &right_tuples[rhs_cursor_],

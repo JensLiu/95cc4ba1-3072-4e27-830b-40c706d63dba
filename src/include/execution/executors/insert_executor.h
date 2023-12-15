@@ -67,7 +67,6 @@ class InsertExecutor : public AbstractExecutor {
 
   std::unique_ptr<TupleInsertHandler> tuple_insert_handler_;
 
-
   auto TupleMayInsert(Tuple &tuple_to_insert) -> std::tuple<bool, std::string, std::optional<RID>>;
   auto OnInsertCreateIndex(Tuple &tuple, RID &rid) -> std::pair<bool, std::string>;
   auto HandleFreshInsert(Tuple &tuple) -> std::pair<bool, std::string>;

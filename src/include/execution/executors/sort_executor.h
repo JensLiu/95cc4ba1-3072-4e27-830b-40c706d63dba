@@ -22,6 +22,49 @@
 #include "storage/table/tuple.h"
 
 namespace bustub {
+struct SortKey {
+  std::vector<Value> key_vals_;
+  void AddCol(const Value &val) { key_vals_.push_back(val); }
+  auto operator==(const SortKey &that) const -> bool {
+    if (key_vals_.size() != that.key_vals_.size()) {
+      return false;
+    }
+    for (uint32_t i = 0; i < key_vals_.size(); ++i) {
+      if (key_vals_[i].CompareEquals(that.key_vals_[i]) != CmpBool::CmpTrue) {
+        return false;
+      }
+    }
+    return true;
+  }
+  enum CmpResult { LESS_THAN = 0, EQUALS = 1, GREATER_THAN = 2 };
+  auto static Compare(const SortKey &s1, const SortKey &s2, const std::vector<OrderByType> &order_by_types)
+      -> CmpResult {
+    // less than function
+    for (uint32_t i = 0; i < s1.key_vals_.size(); ++i) {
+      if (s1.key_vals_[i].CompareEquals(s2.key_vals_[i]) == CmpBool::CmpTrue) {
+        continue;
+      }
+      const auto less_than = s1.key_vals_[i].CompareLessThan(s2.key_vals_[i]) == CmpBool::CmpTrue;
+      if (order_by_types[i] == OrderByType::ASC || order_by_types[i] == OrderByType::DEFAULT) {
+        return less_than ? CmpResult::LESS_THAN : CmpResult::GREATER_THAN;
+      }
+      if (order_by_types[i] == OrderByType::DESC) {
+        return !less_than ? CmpResult::LESS_THAN : CmpResult::GREATER_THAN;
+      }
+      assert(0);  // cannot reach here
+    }
+    // equals exactly
+    return CmpResult::EQUALS;
+  };
+};
+
+struct SortValue {
+  Tuple tuple_;
+  RID rid_;
+};
+}  // namespace bustub
+
+namespace bustub {
 
 /**
  * The SortExecutor executor executes a sort.
@@ -50,7 +93,6 @@ class SortExecutor : public AbstractExecutor {
   auto GetOutputSchema() const -> const Schema & override { return plan_->OutputSchema(); }
 
  private:
-
   /** The sort plan node to be executed */
   const SortPlanNode *plan_;
   std::shared_ptr<AbstractExecutor> child_executor_;

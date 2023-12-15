@@ -18,7 +18,7 @@
 
 namespace bustub {
 
-auto NLJToHashJoinOptimisable(AbstractExpressionRef predicate, std::vector<AbstractExpressionRef> *left_cols,
+auto NLJToHashJoinOptimisable(const AbstractExpressionRef &predicate, std::vector<AbstractExpressionRef> *left_cols,
                               std::vector<AbstractExpressionRef> *right_cols) -> bool {
   // a non-recursive DFS that checks for each expression to make sure that they are all equality tests
   std::vector<AbstractExpressionRef> queue;

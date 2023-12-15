@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "catalog/catalog.h"
@@ -49,7 +50,7 @@ auto GetTupleSnapshot(ExecutorContext *exec_ctx, const AbstractPlanNode *plan, c
 auto ConstructPartialSchema(const std::vector<bool> &modified_fields, const Schema *base_schema)
     -> std::pair<Schema, std::vector<int>>;
 
-auto IsWriteWriteConflict(const TupleMeta &update_meta, timestamp_t read_ts, txn_id_t txn_id) -> bool;
+auto IsWriteWriteConflict(const TupleMeta &base_meta, timestamp_t read_ts, txn_id_t txn_id) -> bool;
 
 /**
  * calculates the diff log, does not set the prev_version, the caller should set it explicitly
@@ -122,8 +123,8 @@ auto QueryRIDFromPrimaryKeyIndex(std::vector<IndexInfo *> &indexes, Tuple &tuple
 class TupleInsertHandler {
  public:
   TupleInsertHandler(TransactionManager *txn_mngr, LockManager *lk_mngr, Transaction *txn, TableInfo *table_info,
-                     const std::vector<IndexInfo *> &indexes)
-      : txn_mngr_(txn_mngr), lk_mngr_(lk_mngr), txn_(txn), table_info_(table_info), indexes_(indexes) {}
+                     std::vector<IndexInfo *> indexes)
+      : txn_mngr_(txn_mngr), lk_mngr_(lk_mngr), txn_(txn), table_info_(table_info), indexes_(std::move(indexes)) {}
 
   auto InsertTuple(Tuple &tuple) -> std::pair<bool, std::string>;
 
@@ -177,7 +178,7 @@ class TupleDeleteHandler {
 #define BLOCKING_EXECUTOR_END_EXEC return true;
 
 #define HANDLE_NON_BLOCKING_EXECUTOR_RETURN(row_cnt_var)                                    \
-  if (row_cnt_var != 0) {                                                                   \
+  if ((row_cnt_var) != 0) {                                                                 \
     /* has more than one row inserted which means */                                        \
     /* that the next call it not the first of the batch */                                  \
     batch_begin_ = false;                                                                   \

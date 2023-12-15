@@ -15,10 +15,50 @@
 #include <memory>
 #include <utility>
 
+#include "common/util/hash_util.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/hash_join_plan.h"
 #include "storage/table/tuple.h"
+
+namespace bustub {
+struct JoinKey {
+  std::vector<Value> key_vals_;
+  void AddColValue(const Value &val) { key_vals_.push_back(val); }
+  auto operator==(const JoinKey &that) const -> bool {
+    if (key_vals_.size() != that.key_vals_.size()) {
+      return false;
+    }
+    for (uint32_t i = 0; i < key_vals_.size(); ++i) {
+      if (key_vals_[i].CompareEquals(that.key_vals_[i]) != CmpBool::CmpTrue) {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+struct JoinValue {
+  std::vector<Tuple> left_tuples_;
+  std::vector<Tuple> right_tuples_;
+  void CombineLeft(const Tuple &tuple) { left_tuples_.push_back(tuple); }
+  void CombineRight(const Tuple &tuple) { right_tuples_.push_back(tuple); }
+};
+
+}  // namespace bustub
+
+namespace std {
+template <>
+struct hash<bustub::JoinKey> {
+  auto operator()(const bustub::JoinKey &join_key) const -> std::size_t {
+    size_t curr_hash = 0;
+    for (const auto &key : join_key.key_vals_) {
+      curr_hash = bustub::HashUtil::CombineHashes(curr_hash, bustub::HashUtil::HashValue(&key));
+    }
+    return curr_hash;
+  }
+};
+}  // namespace std
 
 namespace bustub {
 
@@ -65,9 +105,9 @@ class HashJoinExecutor : public AbstractExecutor {
   uint32_t rhs_cursor_;
   bool hash_join_emit_null_{true};
 
-  Tuple MergeTuples(const Tuple *lhs_tpl, const Schema *lhs_schema, const Tuple *rhs_tpl,
-                    const Schema *rhs_schema) const;
-  Tuple EmptyRhsTuple(const Tuple *lhs_tpl, const Schema *lhs_schema, const Schema *rhs_schema) const;
+  auto MergeTuples(const Tuple *lhs_tpl, const Schema *lhs_schema, const Tuple *rhs_tpl, const Schema *rhs_schema) const
+      -> Tuple;
+  auto EmptyRhsTuple(const Tuple *lhs_tpl, const Schema *lhs_schema, const Schema *rhs_schema) const -> Tuple;
 };
 
 }  // namespace bustub

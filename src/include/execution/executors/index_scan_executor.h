@@ -47,6 +47,6 @@ class IndexScanExecutor : public AbstractExecutor {
 
   std::vector<RID> result_;
   TableInfo *table_info_;
-  uint32_t cursor{0};
+  uint32_t cursor_{0};
 };
 }  // namespace bustub

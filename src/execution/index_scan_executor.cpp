@@ -36,8 +36,8 @@ void IndexScanExecutor::Init() {
 auto IndexScanExecutor::Next(Tuple *tuple, RID *rid) -> bool {
   // fetch from table
 
-  while (cursor < result_.size()) {
-    RID table_heap_rid = result_[cursor++];
+  while (cursor_ < result_.size()) {
+    RID table_heap_rid = result_[cursor_++];
     auto version_link = exec_ctx_->GetTransactionManager()->GetVersionLink(table_heap_rid);
     if (version_link.has_value() && version_link->in_progress_) {
       // in progress tuple cannot be accessed?

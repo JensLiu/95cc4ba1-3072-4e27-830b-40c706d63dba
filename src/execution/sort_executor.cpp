@@ -39,7 +39,7 @@ void SortExecutor::Init() {
 }
 
 auto SortExecutor::Next(Tuple *tuple, RID *rid) -> bool {
-  while(cursor_ < container_.size()) {
+  while (cursor_ < container_.size()) {
     const auto &value = container_[cursor_++].second;
     *tuple = value.tuple_;
     *rid = value.rid_;

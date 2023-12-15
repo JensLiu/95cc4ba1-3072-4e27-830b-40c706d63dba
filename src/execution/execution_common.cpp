@@ -27,7 +27,7 @@ auto ReconstructTuple(const Schema *schema, const Tuple &base_tuple, const Tuple
   const auto col_cnt = schema->GetColumnCount();
   values.reserve(col_cnt);
   // retrieve data from the base tuple
-  for (int i = 0; i < col_cnt; ++i) {
+  for (uint32_t i = 0; i < col_cnt; ++i) {
     values.push_back(base_tuple.GetValue(schema, i));
   }
 
@@ -36,7 +36,7 @@ auto ReconstructTuple(const Schema *schema, const Tuple &base_tuple, const Tuple
     // construct the partial schema
     const auto [partial_schema, partial_col_attrs] = ConstructPartialSchema(log.modified_fields_, schema);
     // apply to old values
-    for (int i = 0; i < partial_col_attrs.size(); ++i) {
+    for (uint32_t i = 0; i < partial_col_attrs.size(); ++i) {
       const auto &partial_tuple = log.tuple_;
       const auto &col_idx = partial_col_attrs[i];
       values[col_idx] = partial_tuple.GetValue(&partial_schema, i);
@@ -50,7 +50,7 @@ auto ConstructPartialSchema(const std::vector<bool> &modified_fields, const Sche
     -> std::pair<Schema, std::vector<int>> {
   std::vector<Column> partial_cols;    // used to construct the partial schema
   std::vector<int> partial_col_attrs;  // used to retrieve data from log tuple
-  for (int i = 0; i < modified_fields.size(); ++i) {
+  for (uint32_t i = 0; i < modified_fields.size(); ++i) {
     if (modified_fields[i]) {
       partial_cols.push_back(base_schema->GetColumn(i));
       partial_col_attrs.push_back(i);
@@ -200,7 +200,7 @@ auto GenerateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_
   std::vector<Value> diff_vals;
   modified_fields.reserve(col_cnt);
 
-  for (int i = 0; i < col_cnt; ++i) {
+  for (uint32_t i = 0; i < col_cnt; ++i) {
     const auto &old_value = base_tuple.GetValue(tuple_schema, i);
     const auto &updated_value = updated_values.at(i);
     if (old_value.CompareExactlyEquals(updated_value)) {
@@ -232,7 +232,7 @@ auto UpdateDiffLog(const Tuple &base_tuple, const std::vector<Value> &updated_va
   const auto &old_partial_tuple = old_diff_log.tuple_;
   const auto old_partial_schema = ConstructPartialSchema(modified_fields, tuple_schema).first;
 
-  for (int i = 0, old_partial_col_idx = 0; i < col_cnt; ++i) {
+  for (uint32_t i = 0, old_partial_col_idx = 0; i < col_cnt; ++i) {
     const auto &old_value = base_tuple.GetValue(tuple_schema, i);
     const auto &updated_value = updated_values.at(i);
     if (modified_fields[i]) {
@@ -258,7 +258,7 @@ auto GenerateFullLog(const Tuple &base_tuple, const Schema *tuple_schema, timest
   const auto col_cnt = tuple_schema->GetColumnCount();
   std::vector<bool> modified_fields;
   modified_fields.reserve(col_cnt);
-  for (int i = 0; i < col_cnt; ++i) {
+  for (uint32_t i = 0; i < col_cnt; ++i) {
     modified_fields.push_back(true);
   }
   return {is_previously_deleted, modified_fields, base_tuple, log_ts};
@@ -267,7 +267,7 @@ auto GenerateFullLog(const Tuple &base_tuple, const Schema *tuple_schema, timest
 auto GenerateDeleteMarker(const Schema *tuple_schema, timestamp_t log_ts) -> UndoLog {
   std::vector<bool> modified_fields;
   modified_fields.reserve(tuple_schema->GetColumnCount());
-  for (int i = 0; i < tuple_schema->GetColumnCount(); ++i) {
+  for (uint32_t i = 0; i < tuple_schema->GetColumnCount(); ++i) {
     modified_fields.push_back(false);
   }
   Schema empty_schema{{}};
@@ -306,7 +306,7 @@ auto VersionUndoLinkPushFrontCAS(UndoLog &head_undo_log, const RID &rid, bool in
 auto GenerateNullTupleForSchema(const Schema *schema) -> Tuple {
   const auto &cols = schema->GetColumns();
   std::vector<Value> values;
-
+  values.reserve(cols.size());
   for (const auto &col : cols) {
     values.push_back(ValueFactory::GetNullValueByType(col.GetType()));
   }
@@ -482,7 +482,6 @@ auto TupleInsertHandler::TupleMayInsert(Tuple &tuple_to_insert) -> std::tuple<bo
 auto TupleDeleteHandler::DeleteTuple(const RID &rid) -> std::pair<bool, std::string> {
   const auto &table = table_info_->table_;
   // its child is a sequential scan or a filter
-
   auto [base_meta, base_tuple] = table->GetTuple(rid);
   if (IsWriteWriteConflict(base_meta, txn_->GetReadTs(), txn_->GetTransactionId())) {
     return {false, "write-write conflict. trying to delete the future"};
@@ -559,7 +558,7 @@ void TxnMgrDbg(const std::string &info, TransactionManager *txn_mgr, const Table
     ss << "(";
     const auto partial_schema = ConstructPartialSchema(log.modified_fields_, &table_info->schema_).first;
     int col_idx = 0;
-    for (int i = 0; i < log.modified_fields_.size(); ++i) {
+    for (uint32_t i = 0; i < log.modified_fields_.size(); ++i) {
       if (!first) {
         ss << ", ";
       } else {

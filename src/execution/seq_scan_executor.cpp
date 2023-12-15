@@ -44,7 +44,7 @@ auto SeqScanExecutor::Next(Tuple *tuple, RID *rid) -> bool {
         return true;
       }
     } else {
-//      std::cout << "no value: " << itr_->GetTuple().second.ToString(&plan_->OutputSchema()) << "\n";
+      //      std::cout << "no value: " << itr_->GetTuple().second.ToString(&plan_->OutputSchema()) << "\n";
     }
   }
   return false;

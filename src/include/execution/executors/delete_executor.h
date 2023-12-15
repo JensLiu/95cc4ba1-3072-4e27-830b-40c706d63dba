@@ -16,11 +16,11 @@
 #include <utility>
 #include <vector>
 
+#include "execution/execution_common.h"
 #include "execution/executor_context.h"
 #include "execution/executors/abstract_executor.h"
 #include "execution/plans/delete_plan.h"
 #include "storage/table/tuple.h"
-#include "execution/execution_common.h"
 
 namespace bustub {
 
@@ -66,6 +66,5 @@ class DeleteExecutor : public AbstractExecutor {
   INSTALL_NON_BLOCKING_EXECUTOR_RETURN_HANDLER;
 
   std::unique_ptr<TupleDeleteHandler> tuple_delete_handler_;
-
 };
 }  // namespace bustub

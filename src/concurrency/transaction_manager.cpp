@@ -110,7 +110,7 @@ void TransactionManager::GarbageCollection() {
 
   // we need to collect all modified table heap
   struct GCValue {
-    std::unordered_set<RID> rids;
+    std::unordered_set<RID> rids_;
   };
 
   std::map<table_oid_t, GCValue> gc_list;
@@ -128,7 +128,7 @@ void TransactionManager::GarbageCollection() {
         }
         gc_list[oid] = {rids};
       } else {
-        auto &rids = itr->second.rids;
+        auto &rids = itr->second.rids_;
         for (const auto &rid : w_rids) {
           rids.insert(rid);
         }
@@ -139,7 +139,7 @@ void TransactionManager::GarbageCollection() {
   // traverse the rids
   for (const auto &[oid, gc_val] : gc_list) {
     const auto table_info = catalog_->GetTable(oid);
-    for (const auto rid : gc_val.rids) {
+    for (const auto rid : gc_val.rids_) {
       const auto &[base_meta, base_tuple] = table_info->table_->GetTuple(rid);
       VersionLinkGarbageCollection(rid, base_meta);
       // TxnMgrDbg("after gc", this, table_info, table_info->table_.get());
